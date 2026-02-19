@@ -165,7 +165,6 @@ st.markdown(
     """
 <div class="hero">
   <h1>量化金融回測系統</h1>
-  <p>支援股票、ETF、指數、加密貨幣 | 5 種策略 | 17+ 績效指標 | 互動式圖表</p>
 </div>
 """,
     unsafe_allow_html=True,
