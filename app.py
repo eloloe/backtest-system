@@ -99,10 +99,10 @@ COLOR_DD = "rgba(248, 81, 73, 0.25)"
 # 側邊欄
 # ──────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("## ⚙️ 回測設定")
+    st.markdown("## 回測設定")
     st.markdown("---")
 
-    st.markdown("### 📊 商品設定")
+    st.markdown("### 商品設定")
     symbol = st.text_input(
         "交易標的 (Yahoo Finance 代碼)",
         value="SPY",
@@ -114,14 +114,14 @@ with st.sidebar:
         help="用於計算 Alpha / Beta，留空則跳過",
     )
 
-    st.markdown("### 📅 回測期間")
+    st.markdown("### 回測期間")
     col_a, col_b = st.columns(2)
     with col_a:
         start_date = st.date_input("開始日期", value=datetime(2018, 1, 1))
     with col_b:
         end_date = st.date_input("結束日期", value=datetime.today())
 
-    st.markdown("### 💰 資金設定")
+    st.markdown("### 資金設定")
     initial_capital = st.number_input(
         "初始資金 (USD)", value=100_000, min_value=1_000, step=10_000
     )
@@ -135,7 +135,7 @@ with st.sidebar:
         st.slider("無風險利率 (%)", min_value=0.0, max_value=10.0, value=4.0, step=0.1) / 100
     )
 
-    st.markdown("### 🎯 交易策略")
+    st.markdown("### 交易策略")
     strategy_name = st.selectbox("選擇策略", STRATEGY_LIST)
 
     # 策略參數
@@ -156,7 +156,7 @@ with st.sidebar:
         macd_signal_p = st.slider("信號線週期", 3, 20, 9)
 
     st.markdown("---")
-    run_btn = st.button("🚀 開始回測", use_container_width=True, type="primary")
+    run_btn = st.button("開始回測", use_container_width=True, type="primary")
 
 # ──────────────────────────────────────────────
 # 主畫面 Hero
@@ -164,7 +164,7 @@ with st.sidebar:
 st.markdown(
     """
 <div class="hero">
-  <h1>📈 量化金融回測系統</h1>
+  <h1>量化金融回測系統</h1>
   <p>支援股票、ETF、指數、加密貨幣 | 5 種策略 | 17+ 績效指標 | 互動式圖表</p>
 </div>
 """,
@@ -175,7 +175,7 @@ st.markdown(
 # 未執行時顯示說明
 # ──────────────────────────────────────────────
 if not run_btn:
-    st.info("👈 請在左側設定回測參數，然後點擊「🚀 開始回測」")
+    st.info("請在左側設定回測參數，然後點擊「開始回測」")
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.markdown(
@@ -187,7 +187,7 @@ if not run_btn:
         )
     with c2:
         st.markdown(
-            "**📊 指數**\n"
+            "**指數**\n"
             "- `^GSPC` — S&P 500\n"
             "- `^IXIC` — Nasdaq\n"
             "- `^DJI` — 道瓊\n"
@@ -195,7 +195,7 @@ if not run_btn:
         )
     with c3:
         st.markdown(
-            "**🇹🇼 台股**\n"
+            "**台股**\n"
             "- `0050.TW` — 台灣 50\n"
             "- `0056.TW` — 高股息\n"
             "- `2330.TW` — 台積電\n"
@@ -203,7 +203,7 @@ if not run_btn:
         )
     with c4:
         st.markdown(
-            "**₿ 加密貨幣**\n"
+            "**加密貨幣**\n"
             "- `BTC-USD` — 比特幣\n"
             "- `ETH-USD` — 以太幣\n"
             "- `SOL-USD` — Solana\n"
@@ -214,18 +214,18 @@ if not run_btn:
 # ──────────────────────────────────────────────
 # 資料下載
 # ──────────────────────────────────────────────
-with st.spinner(f"⏳ 正在下載 {symbol} 資料…"):
+with st.spinner(f"正在下載 {symbol} 資料…"):
     data = fetch_data(symbol, str(start_date), str(end_date))
 
 if data.empty:
-    st.error(f"❌ 無法取得「{symbol}」的資料，請確認代碼是否正確。")
+    st.error(f"無法取得「{symbol}」的資料，請確認代碼是否正確。")
     st.stop()
 
 # 基準指數
 bench_equity = None
 benchmark_returns = None
 if benchmark and benchmark.strip():
-    with st.spinner(f"⏳ 下載基準指數 {benchmark}…"):
+    with st.spinner(f"下載基準指數 {benchmark}…"):
         bench_data = fetch_data(benchmark.strip(), str(start_date), str(end_date))
     if not bench_data.empty:
         bench_r = bench_data["Close"].pct_change().dropna()
@@ -235,7 +235,7 @@ if benchmark and benchmark.strip():
 # ──────────────────────────────────────────────
 # 建立策略
 # ──────────────────────────────────────────────
-with st.spinner("⏳ 執行策略回測…"):
+with st.spinner("執行策略回測…"):
     if strategy_name == "買進持有 (Buy & Hold)":
         strategy = BuyAndHold()
     elif strategy_name == "均線交叉 (MA Cross)":
@@ -280,7 +280,7 @@ with h2:
         .to_csv(index=False)
         .encode("utf-8-sig")
     )
-    st.download_button("📥 下載報告", csv_bytes, f"{symbol}_report.csv", "text/csv")
+    st.download_button("下載報告", csv_bytes, f"{symbol}_report.csv", "text/csv")
 
 st.markdown("---")
 
@@ -315,12 +315,12 @@ vl = metrics_raw["annual_vol"]
 
 cards_html = (
     '<div class="kpi-grid">'
-    + kpi_card("📈 總報酬率", f"{tr:.2%}", f"CAGR {cg:.2%}", sign_class(tr))
-    + kpi_card("⚡ 夏普比率", f"{sh:.2f}", ">1 佳  >2 優秀", sign_class(sh))
-    + kpi_card("📉 最大回撤", f"{md:.2%}", f"Calmar {metrics_raw['calmar']:.2f}", sign_class(md, False))
-    + kpi_card("🎯 年化報酬", f"{cg:.2%}", "", sign_class(cg))
-    + kpi_card("✅ 勝率", f"{wr:.1%}", f"獲利/虧損 {metrics_raw['win_loss_ratio']:.2f}x", sign_class(wr - 0.5))
-    + kpi_card("📊 年化波動", f"{vl:.2%}", f"VaR95% {metrics_raw['var_95']:.2%}", "neg" if vl > 0.25 else "neu")
+    + kpi_card("總報酬率", f"{tr:.2%}", f"CAGR {cg:.2%}", sign_class(tr))
+    + kpi_card("夏普比率", f"{sh:.2f}", ">1 佳  >2 優秀", sign_class(sh))
+    + kpi_card("最大回撤", f"{md:.2%}", f"Calmar {metrics_raw['calmar']:.2f}", sign_class(md, False))
+    + kpi_card("年化報酬", f"{cg:.2%}", "", sign_class(cg))
+    + kpi_card("勝率", f"{wr:.1%}", f"獲利/虧損 {metrics_raw['win_loss_ratio']:.2f}x", sign_class(wr - 0.5))
+    + kpi_card("年化波動", f"{vl:.2%}", f"VaR95% {metrics_raw['var_95']:.2%}", "neg" if vl > 0.25 else "neu")
     + "</div>"
 )
 st.markdown(cards_html, unsafe_allow_html=True)
@@ -329,7 +329,7 @@ st.markdown(cards_html, unsafe_allow_html=True)
 # 頁籤
 # ──────────────────────────────────────────────
 tab1, tab2, tab3, tab4 = st.tabs(
-    ["📈 績效總覽", "📊 詳細分析", "⚠️ 風險分析", "🔄 交易記錄"]
+    ["績效總覽", "詳細分析", "風險分析", "交易記錄"]
 )
 
 # ══════════════════════════════════════════════
@@ -452,7 +452,7 @@ with tab2:
     left, right = st.columns([1, 2])
 
     with left:
-        st.markdown("#### 📋 完整績效指標")
+        st.markdown("#### 完整績效指標")
         df_metrics = pd.DataFrame(
             list(metrics_disp.items()), columns=["指標", "數值"]
         )
@@ -738,7 +738,7 @@ with tab4:
 st.markdown("---")
 st.markdown(
     "<p style='text-align:center;color:#8B949E;font-size:0.8rem;'>"
-    "資料來源：Yahoo Finance　｜　本系統僅供學術研究與回測分析，不構成任何投資建議"
+    "資料來源：Yahoo Finance"
     "</p>",
     unsafe_allow_html=True,
 )
