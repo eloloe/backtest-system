@@ -165,6 +165,7 @@ st.markdown(
     """
 <div class="hero">
   <h1>量化金融回測系統</h1>
+  <p>Evan project</p>
 </div>
 """,
     unsafe_allow_html=True,
