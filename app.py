@@ -25,8 +25,8 @@ warnings.filterwarnings("ignore")
 # 頁面設定
 # ──────────────────────────────────────────────
 st.set_page_config(
-    page_title="量化金融回測系統",
-    page_icon="📈",
+    page_title="金融回測系統",
+    page_icon="",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -37,7 +37,7 @@ st.markdown(
     """
 <style>
 /* 全域背景 */
-.stApp { background-color: #0D1117; }
+.stApp { background-color: #F97316; }
 
 /* 側邊欄 */
 section[data-testid="stSidebar"] { background-color: #161B22; }
