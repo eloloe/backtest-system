@@ -1,15 +1,4 @@
-st.set_page_config(
-    page_title="Backtest-System",
-    page_icon="🧠",
-    layout="wide"
-)
-st.markdown("""
-<style>
-#MainMenu {visibility: hidden;}
-footer {visibility: hidden;}
-header {visibility: hidden;}
-</style>
-""", unsafe_allow_html=True)
+
 import warnings
 from datetime import datetime
 
@@ -41,7 +30,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
 # ──────────────────────────────────────────────
 # 自訂 CSS
 # ──────────────────────────────────────────────
