@@ -37,7 +37,7 @@ st.markdown(
     """
 <style>
 /* 全域背景 */
-.stApp { background-color: #F97316; }
+.stApp { background-color: #0D1117; }
 
 /* 側邊欄 */
 section[data-testid="stSidebar"] { background-color: #161B22; }
