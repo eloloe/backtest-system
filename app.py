@@ -11,6 +11,9 @@ from plotly.subplots import make_subplots
 from backtester import Backtester
 from data_fetcher import fetch_data
 from metrics import calculate_annual_returns, calculate_metrics, calculate_monthly_returns
+from fundamentals import fetch_fundamentals
+from factor_engine import FACTOR_REGISTRY
+from screener import apply_factor_score, filter_stocks
 from strategies import (
     BollingerBandsStrategy,
     BuyAndHold,
@@ -102,17 +105,60 @@ with st.sidebar:
     st.markdown("## 回測設定")
     st.markdown("---")
 
-    st.markdown("### 商品設定")
-    symbol = st.text_input(
-        "交易標的 (Yahoo Finance 代碼)",
-        value="SPY",
-        help="例如：SPY、AAPL、^GSPC、BTC-USD、0050.TW",
+    st.markdown("### 商品池設定 (Stock Universe)")
+    universe_str = st.text_area(
+        "交易標的 (用逗號分隔)",
+        value="AAPL, MSFT, GOOGL, AMZN, META, TSLA, NVDA",
+        help="例如：AAPL, MSFT, SPY",
     )
+    universe_list = [s.strip().upper() for s in universe_str.split(",") if s.strip()]
     benchmark = st.text_input(
         "基準指數（選填）",
         value="SPY",
         help="用於計算 Alpha / Beta，留空則跳過",
     )
+
+    st.markdown("### 🎯 基本面濾網 (Fundamentals)")
+    use_screener = st.checkbox("啟用基本面篩選", value=True)
+    if use_screener:
+        pe_max = st.number_input("PE (本益比) <", value=50.0)
+        roe_min = st.number_input("ROE (股東權益報酬率) > (%)", value=15.0) / 100.0
+        rev_growth_min = st.number_input("營收成長率 > (%)", value=10.0) / 100.0
+        mcap_min_b = st.number_input("市值最小值 (Billion USD)", value=10.0)
+    else:
+        pe_max = roe_min = rev_growth_min = mcap_min_b = None
+
+    # ── Factor Scoring System ──────────────────────────────
+    st.markdown("### 🏆 因子評分系統 (Factor Scoring)")
+    use_factor_scoring = st.checkbox("啟用因子評分（選出 Top N 股票）", value=False)
+    if use_factor_scoring:
+        with st.expander("選擇因子與權重", expanded=True):
+            active_factors = {}
+            for key, meta in FACTOR_REGISTRY.items():
+                col_a, col_b = st.columns([1, 2])
+                with col_a:
+                    enabled = st.checkbox(meta["label"], value=(key in {"roe", "pe"}), key=f"factor_{key}")
+                with col_b:
+                    w = st.slider(
+                        "權重",
+                        min_value=0.0, max_value=3.0, value=1.0, step=0.1,
+                        key=f"weight_{key}",
+                        disabled=not enabled,
+                        label_visibility="collapsed",
+                    )
+                if enabled:
+                    active_factors[key] = w
+
+        col_n, col_m = st.columns(2)
+        with col_n:
+            factor_top_n = st.number_input("挑選前 N 名", min_value=1, max_value=len(universe_list), value=min(5, len(universe_list)))
+        with col_m:
+            norm_method = st.radio("標準化方式", ["Z-Score", "百分位排名"], horizontal=True)
+        norm_method_key = "zscore" if norm_method == "Z-Score" else "rank"
+    else:
+        active_factors = {}
+        factor_top_n = len(universe_list)
+        norm_method_key = "zscore"
 
     st.markdown("### 回測期間")
     col_a, col_b = st.columns(2)
@@ -165,7 +211,7 @@ st.markdown(
     """
 <div class="hero">
   <h1>量化金融回測系統</h1>
-  <p>Evan project</p>
+  <p>Leo project</p>
 </div>
 """,
     unsafe_allow_html=True,
@@ -212,14 +258,86 @@ if not run_btn:
     st.stop()
 
 # ──────────────────────────────────────────────
-# 資料下載
+# 執行與回測邏輯
 # ──────────────────────────────────────────────
-with st.spinner(f"正在下載 {symbol} 資料…"):
-    data = fetch_data(symbol, str(start_date), str(end_date))
+filtered_symbols = universe_list
 
-if data.empty:
-    st.error(f"無法取得「{symbol}」的資料，請確認代碼是否正確。")
+# Step 1: Hard-threshold fundamental filter
+if use_screener:
+    with st.spinner("正在取得基本面資料並篩選..."):
+        df_fun = fetch_fundamentals(universe_list)
+        mcap_real = mcap_min_b * 1_000_000_000 if mcap_min_b else None
+        pe_val = pe_max if pe_max > 0 else None
+
+        filtered_df = filter_stocks(
+            df_fun,
+            pe_max=pe_val,
+            roe_min=roe_min if roe_min > -10 else None,
+            rev_growth_min=rev_growth_min if rev_growth_min > -10 else None,
+            mcap_min=mcap_real,
+        )
+        filtered_symbols = filtered_df["symbol"].tolist()
+
+        st.markdown("### 📊 基本面篩選結果")
+        st.dataframe(filtered_df, use_container_width=True)
+else:
+    df_fun = fetch_fundamentals(universe_list)  # needed by factor scoring even if threshold filter is off
+
+if not filtered_symbols:
+    st.error("沒有股票通過基本面篩選！請放寬條件。")
     st.stop()
+
+# ── Step 2 (Integration Point): Factor Scoring ───────────────
+# If factor scoring is enabled, re-rank the filtered universe and
+# pick the top N. The backtest loop below is completely unchanged.
+if use_factor_scoring and active_factors:
+    with st.spinner("正在計算因子分數並排名..."):
+        # Only score stocks that survived the hard filter
+        df_fun_filtered = df_fun[df_fun["symbol"].isin(filtered_symbols)]
+        ranked_df = apply_factor_score(
+            df_fundamentals=df_fun_filtered,
+            start=str(start_date),
+            end=str(end_date),
+            active_factors=active_factors,
+            top_n=int(factor_top_n),
+            method=norm_method_key,
+        )
+        filtered_symbols = ranked_df["symbol"].tolist()
+
+        # ── Visualisation: Factor Distribution ─────────────────
+        st.markdown("### 🏆 因子評分排名")
+        # Score bar chart (go is already imported at the top of the file)
+        fig_score = go.Figure(
+            go.Bar(
+                x=ranked_df["symbol"],
+                y=ranked_df["Composite_Score"],
+                marker_color=[
+                    COLOR_BUY if v >= 0 else COLOR_SELL
+                    for v in ranked_df["Composite_Score"]
+                ],
+                text=[f"{v:.2f}" for v in ranked_df["Composite_Score"]],
+                textposition="outside",
+            )
+        )
+        fig_score.update_layout(
+            title="Top N 股票綜合因子分數",
+            xaxis_title="股票代號",
+            yaxis_title="Composite Score",
+            template=PLOTLY_THEME,
+            height=320,
+            margin=dict(t=50, b=40),
+        )
+        st.plotly_chart(fig_score, use_container_width=True)
+
+        # Detail table — show factor z-scores
+        display_cols = ["symbol", "Composite_Score"] + [
+            c for c in ranked_df.columns if c.startswith("z_")
+        ]
+        st.dataframe(
+            ranked_df[[c for c in display_cols if c in ranked_df.columns]],
+            use_container_width=True,
+            hide_index=True,
+        )
 
 # 基準指數
 bench_equity = None
@@ -233,31 +351,57 @@ if benchmark and benchmark.strip():
         bench_equity = (1 + bench_r).cumprod() * initial_capital
 
 # ──────────────────────────────────────────────
-# 建立策略
+# 建立策略並執行回測 (使用等權重投資組合)
 # ──────────────────────────────────────────────
-with st.spinner("執行策略回測…"):
-    if strategy_name == "買進持有 (Buy & Hold)":
-        strategy = BuyAndHold()
-    elif strategy_name == "均線交叉 (MA Cross)":
-        strategy = MACross(short_window=short_window, long_window=long_window, ma_type=ma_type)
-    elif strategy_name == "RSI 策略":
-        strategy = RSIStrategy(period=rsi_period, oversold=rsi_oversold, overbought=rsi_overbought)
-    elif strategy_name == "布林通道 (Bollinger Bands)":
-        strategy = BollingerBandsStrategy(period=bb_period, std_dev=bb_std)
-    elif strategy_name == "MACD 策略":
-        strategy = MACDStrategy(fast=macd_fast, slow=macd_slow, signal_period=macd_signal_p)
+with st.spinner("下載歷史報價並執行策略回測…"):
+    capital_per_stock = initial_capital / len(filtered_symbols)
+    
+    all_equity_curves = []
+    all_trades = []
+    
+    for sym in filtered_symbols:
+        data = fetch_data(sym, str(start_date), str(end_date))
+        if data.empty:
+            continue
+            
+        if strategy_name == "買進持有 (Buy & Hold)":
+            strategy = BuyAndHold()
+        elif strategy_name == "均線交叉 (MA Cross)":
+            strategy = MACross(short_window=short_window, long_window=long_window, ma_type=ma_type)
+        elif strategy_name == "RSI 策略":
+            strategy = RSIStrategy(period=rsi_period, oversold=rsi_oversold, overbought=rsi_overbought)
+        elif strategy_name == "布林通道 (Bollinger Bands)":
+            strategy = BollingerBandsStrategy(period=bb_period, std_dev=bb_std)
+        elif strategy_name == "MACD 策略":
+            strategy = MACDStrategy(fast=macd_fast, slow=macd_slow, signal_period=macd_signal_p)
 
-    signals = strategy.generate_signals(data)
+        signals = strategy.generate_signals(data)
 
-    bt = Backtester(
-        initial_capital=initial_capital,
-        commission=commission,
-        slippage=slippage,
-    )
-    portfolio, trades = bt.run(data, signals)
-
-    equity_curve = portfolio["portfolio_value"]
-    returns = portfolio["returns"].dropna()
+        bt = Backtester(
+            initial_capital=capital_per_stock,
+            commission=commission,
+            slippage=slippage,
+        )
+        portfolio, trades = bt.run(data, signals)
+        
+        all_equity_curves.append(portfolio["portfolio_value"])
+        if not trades.empty:
+            trades["symbol"] = sym
+            all_trades.append(trades)
+            
+    if not all_equity_curves:
+        st.error("無法取得任何歷史股價資料來進行回測！")
+        st.stop()
+        
+    df_curves = pd.concat(all_equity_curves, axis=1).ffill().fillna(0)
+    equity_curve = df_curves.sum(axis=1)
+    returns = equity_curve.pct_change().dropna()
+    
+    if all_trades:
+        trades = pd.concat(all_trades, ignore_index=True)
+        trades = trades.sort_values(by="date").reset_index(drop=True)
+    else:
+        trades = pd.DataFrame()
 
     metrics_disp, metrics_raw = calculate_metrics(
         equity_curve=equity_curve,
@@ -273,14 +417,14 @@ with st.spinner("執行策略回測…"):
 # ──────────────────────────────────────────────
 h1, h2 = st.columns([4, 1])
 with h1:
-    st.markdown(f"### {symbol}　｜　{strategy_name}")
+    st.markdown(f"### 等權重投資組合 ({len(filtered_symbols)} 檔)　｜　{strategy_name}")
 with h2:
     csv_bytes = (
         pd.DataFrame(list(metrics_disp.items()), columns=["指標", "數值"])
         .to_csv(index=False)
         .encode("utf-8-sig")
     )
-    st.download_button("下載報告", csv_bytes, f"{symbol}_report.csv", "text/csv")
+    st.download_button("下載報告", csv_bytes, f"portfolio_report.csv", "text/csv")
 
 st.markdown("---")
 
@@ -344,7 +488,7 @@ with tab1:
         go.Scatter(
             x=equity_curve.index,
             y=equity_curve,
-            name=f"{symbol} ({strategy_name})",
+            name=f"投資組合 ({strategy_name})",
             line=dict(color=COLOR_STRATEGY, width=2.5),
             fill="tozeroy",
             fillcolor="rgba(88,166,255,0.06)",
@@ -389,7 +533,7 @@ with tab1:
             )
 
     fig_eq.update_layout(
-        title=f"{symbol} 投資組合淨值曲線",
+        title=f"投資組合 淨值曲線",
         xaxis_title="日期",
         yaxis_title="投資組合價值 (USD)",
         template=PLOTLY_THEME,
@@ -669,7 +813,14 @@ with tab4:
         td["price"] = td["price"].map("${:.2f}".format)
         td["shares"] = td["shares"].map("{:.4f}".format)
         td["value"] = td["value"].map("${:,.2f}".format)
-        td.columns = ["日期", "動作", "成交價", "股數", "金額"]
+        
+        # Determine column order: Add 'symbol' if it exists
+        if "symbol" in td.columns:
+            td = td[["date", "symbol", "action", "price", "shares", "value"]]
+            td.columns = ["日期", "標的", "動作", "成交價", "股數", "金額"]
+        else:
+            td = td[["date", "action", "price", "shares", "value"]]
+            td.columns = ["日期", "動作", "成交價", "股數", "金額"]
 
         def highlight_action(row):
             color = "#1A3A1A" if row["動作"] == "BUY" else "#3A1A1A"
