@@ -40,29 +40,6 @@
 | `backtester.py` | 事件驅動回測引擎（含手續費／滑價） |
 | `metrics.py` | 績效與風險指標計算 |
 
----
-
-## 快速開始
-
-```bash
-# 1. 安裝相依套件
-pip install -r requirements.txt
-
-# 2. 啟動應用
-streamlit run app.py
-```
-
-啟動後於左側側邊欄設定商品池、篩選條件、回測期間、資金與策略，點擊「開始回測」即可。
-
----
-
-## 技術棧
-
-- **Python 3.11**
-- **Streamlit** — 互動式前端
-- **yfinance** — 市場資料
-- **pandas / numpy** — 資料處理與計算
-- **plotly** — 互動式視覺化
 
 ---
 
