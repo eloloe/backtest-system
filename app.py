@@ -40,10 +40,27 @@ st.markdown(
     """
 <style>
 /* 全域背景 */
-.stApp { background-color: #0D1117; }
+.stApp { background-color: #0D1117; color: #E6EDF3; }
 
 /* 側邊欄 */
 section[data-testid="stSidebar"] { background-color: #161B22; }
+
+/* 側邊欄文字（標題、標籤、說明）強制為亮色，避免深色底配深灰字看不到 */
+section[data-testid="stSidebar"] * { color: #E6EDF3; }
+section[data-testid="stSidebar"] h1,
+section[data-testid="stSidebar"] h2,
+section[data-testid="stSidebar"] h3 { color: #F0F6FC; }
+
+/* 一般文字、Widget 標籤 */
+.stApp, .stApp p, .stApp label, .stApp span,
+[data-testid="stWidgetLabel"] p,
+[data-testid="stMarkdownContainer"] p { color: #E6EDF3; }
+
+/* 輸入框 / 數字框內文字保持深底亮字 */
+.stApp input, .stApp textarea { color: #E6EDF3 !important; }
+
+/* 說明用的 st.info / st.error 等提示區塊文字 */
+[data-testid="stAlert"] * { color: #E6EDF3; }
 
 /* 標題區塊 */
 .hero {
