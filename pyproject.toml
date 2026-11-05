@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "backtest-system"
+version = "0.4.0"
+description = "Research backtester: next-open fills, TW/US costs, walk-forward, and a shared report."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "streamlit>=1.28.0",
+    "yfinance>=0.2.31",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "plotly>=5.18.0",
+    "scipy>=1.11.0",
+    "requests>=2.31.0",
+    "pyarrow>=14.0.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4.0"]
+shioaji = ["shioaji>=1.7,<1.8"]
+# Not imported by the default engine. The Nautilus hook only checks whether
+# this distribution is installed, then refuses until an adapter is written.
+nautilus = ["nautilus_trader>=1.200"]
+
+[project.scripts]
+backtest = "backtest_system.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "src"]
