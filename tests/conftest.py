@@ -7,4 +7,7 @@ def _isolated_provider_env(monkeypatch):
     monkeypatch.delenv("BACKTEST_DATA_PROVIDER", raising=False)
     monkeypatch.delenv("TIINGO_API_KEY", raising=False)
     monkeypatch.delenv("POLYGON_API_KEY", raising=False)
+    monkeypatch.delenv("SHIOAJI_API_KEY", raising=False)
+    monkeypatch.delenv("SHIOAJI_SECRET_KEY", raising=False)
+    monkeypatch.delenv("SHIOAJI_SIMULATION", raising=False)
     monkeypatch.setenv("BACKTEST_DATA_CACHE", "0")

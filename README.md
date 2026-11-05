@@ -8,7 +8,7 @@
 
 ## 功能特色
 
-- **商品池設定**：支援美股、ETF、指數、台股（`.TW`）、加密貨幣（`BTC-USD` 等）。預設資料來源為 Yahoo Finance，可改接 Tiingo 或 Polygon（見下方）。
+- **商品池設定**：支援美股、ETF、指數、台股（`.TW`）、加密貨幣（`BTC-USD` 等）。預設資料來源為 Yahoo Finance，可改接 Tiingo、Polygon 或永豐 Shioaji（見下方）。
 - **基本面濾網**：以 PE、ROE、營收成長率、市值等硬門檻篩選股票池。
 - **多因子評分系統**：ROE / PE / PB / 營收成長 / 盈餘成長 / 動能 / 波動率等因子，可自由開關與調整權重，支援 Z-Score 與百分位排名兩種標準化，選出綜合分數 Top N。
 - **五種交易策略**：
@@ -33,7 +33,7 @@
 |------|------|
 | `app.py` | Streamlit 主程式（UI、流程整合、圖表） |
 | `data_fetcher.py` | 依設定的 provider 取得 OHLCV |
-| `providers/` | 價格來源（Yahoo / Tiingo / Polygon）與本機 Parquet 快取 |
+| `providers/` | 價格來源（Yahoo / Tiingo / Polygon / Shioaji）與本機 Parquet 快取 |
 | `fundamentals.py` | 抓取基本面資料（PE、PB、ROE…，目前仍是 Yahoo 當下快照） |
 | `screener.py` | 硬門檻篩選與因子評分整合 |
 | `factor_engine.py` | 因子註冊表、價格因子計算、標準化與綜合評分 |
@@ -53,6 +53,7 @@
 | `yahoo`（預設） | 無 | 沿用 Yahoo 代碼：美股、ETF、指數、台股（`.TW`）、加密貨幣（`BTC-USD`） | `auto_adjust=True`，除權息 |
 | `tiingo` | `TIINGO_API_KEY` | 美股、ETF 日線 | 使用 `adj*` 欄位（除權息） |
 | `polygon` | `POLYGON_API_KEY` | 美股、ETF 日線 | `adjusted=true`，只還原拆股，不含股息 |
+| `shioaji` | `SHIOAJI_API_KEY`、`SHIOAJI_SECRET_KEY` | 台股、台股 ETF、台指期 | 交易所成交價，不還原除權息。預設模擬環境 |
 
 切換範例：
 
@@ -62,16 +63,44 @@ export TIINGO_API_KEY=你的金鑰
 streamlit run app.py
 ```
 
-Polygon 把 `BACKTEST_DATA_PROVIDER` 設成 `polygon`，金鑰變數是 `POLYGON_API_KEY`。選了這兩個來源卻沒設金鑰時會直接報錯，不會悄悄退回 Yahoo，專案裡也不會放任何金鑰。
+Polygon 把 `BACKTEST_DATA_PROVIDER` 設成 `polygon`，金鑰變數是 `POLYGON_API_KEY`。選了需要金鑰的來源卻沒設時會直接報錯，不會悄悄退回 Yahoo，專案裡也不會放任何金鑰。
 
 成功取回的日線會寫進 `data_cache/`（Parquet，已列入 `.gitignore`）。鍵是 provider、代碼、起始日與結束日。關掉快取：`BACKTEST_DATA_CACHE=0`。換目錄：`BACKTEST_DATA_CACHE_DIR`。
 
 `end` 不含當日，跟 `yfinance` 的 `history(end=...)` 一樣。
 
+### 永豐 Shioaji（台股、台股 ETF、台指期）
+
+美股、其他市場和加密貨幣不要走這條。`AAPL`、`BTC-USD` 會直接報錯，請改 `yahoo`、`tiingo` 或 `polygon`。一次執行只有一個 `BACKTEST_DATA_PROVIDER`，不會在同一條請求裡把台股分給永豐、美股分給 Tiingo。兩邊都要時，分兩次跑，或在呼叫端換 provider。
+
+```bash
+pip install -r requirements-shioaji.txt
+export BACKTEST_DATA_PROVIDER=shioaji
+export SHIOAJI_API_KEY=你的 API Key
+export SHIOAJI_SECRET_KEY=你的 Secret Key
+streamlit run app.py
+```
+
+`shioaji` 不在 `requirements.txt` 裡，沒裝也不影響原本的 Demo。金鑰只從這兩個環境變數讀，傳給 `api.login(api_key=..., secret_key=...)`。缺一就丟 `MissingApiKeyError`。不要把金鑰或帳號寫進 repo。
+
+預設是模擬環境：`sj.Shioaji(simulation=True)`。這裡只抓 K 線，不啟用憑證，也不下單。要連正式環境再設 `SHIOAJI_SIMULATION=0`。Shioaji 得連得到永豐，多半要在自己的電腦上跑（例如 Mac）；雲端 Demo 通常沒有這條線路。
+
+| 你傳的代碼 | 向 Shioaji 查 |
+|------------|----------------|
+| `2330.TW`、`2330.TWO`、`2330` | `2330` |
+| `0050.TW`、`0050` | `0050` |
+| `TXF` | `TXFR1`（台指期近月連續，結算日換月） |
+| `TXFR1`、`TXFR2`、`TXFH6` | 原樣。`TXFR2` 是次月；月份代碼不會被改成近月 |
+
+日線不是另一支 API。`kbars` 是一分鐘線，一次最多 30 個日曆日，長區間會拆開抓再合成。`end` 一樣不含當日。股票用日曆日。台指期把 15:00 以後算到下一個交易日，週五夜盤到週六凌晨算下週一；國定假日沒有再往後順延。價格是交易所成交價，不還原除權息。股票成交量是張，期貨是口，跟 Yahoo 台股用「股」計的成交量不同。
+
+股票分鐘線大約從 2020-03-02 起，期貨大約從 2020-03-22 起。抓成功的日線一樣寫進 `data_cache/`。
+
 目前的限制：
 
 - Yahoo 適合示範。調整方式與服務穩定性都不該當成研究級資料。
-- Tiingo 與 Polygon 這一步只接美股／ETF 日線。代碼原樣送出，不會把 `2330.TW` 或 `BTC-USD` 轉成其他市場的格式。台股與加密貨幣的來源以後再加。
+- Tiingo 與 Polygon 只接美股／ETF 日線，代碼原樣送出。台股與台指期用 Shioaji。加密貨幣仍走 Yahoo。
+- Shioaji 不還原除權息，股票成交量是張。和 Yahoo 的還原股價、成交股數不會對齊。
 - Polygon 沒有做股息調整，收盤價不會和 Yahoo／Tiingo 的總報酬價格對齊。
 - 基本面仍是 Yahoo `ticker.info` 的當下快照，拿來做歷史篩選有前視問題。這一步沒有改成 point-in-time。
 
@@ -103,7 +132,7 @@ Polygon 把 `BACKTEST_DATA_PROVIDER` 設成 `polygon`，金鑰變數是 `POLYGON
 
 多檔標的的做法與以前相同：每檔用等分資金各自全進全出，淨值再相加。引擎不換匯。美股和台股放在同一個組合裡時，數字會直接相加。
 
-跑單元測試（不需要金鑰）：
+跑單元測試（不需要金鑰，也不必安裝 `shioaji`）：
 
 ```bash
 pip install -r requirements-dev.txt
