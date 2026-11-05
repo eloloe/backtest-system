@@ -1,7 +1,8 @@
 """Price provider selection.
 
 ``BACKTEST_DATA_PROVIDER`` picks the source (default ``yahoo``).
-Tiingo and Polygon raise ``MissingApiKeyError`` when their key is unset.
+Tiingo, Polygon, and Shioaji raise ``MissingApiKeyError`` when their
+key is unset.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from providers.base import (
 )
 from providers.cache import CachingProvider
 from providers.polygon import PolygonProvider
+from providers.shioaji import ShioajiProvider
 from providers.tiingo import TiingoProvider
 from providers.yahoo import YahooProvider
 
@@ -23,6 +25,7 @@ _FACTORIES: dict[str, type[PriceProvider]] = {
     "yahoo": YahooProvider,
     "tiingo": TiingoProvider,
     "polygon": PolygonProvider,
+    "shioaji": ShioajiProvider,
 }
 
 _TRUE = {"1", "true", "yes", "on"}
@@ -69,6 +72,7 @@ __all__ = [
     "PolygonProvider",
     "PriceProvider",
     "ProviderError",
+    "ShioajiProvider",
     "TiingoProvider",
     "YahooProvider",
     "get_provider",
