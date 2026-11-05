@@ -1,19 +1,30 @@
-import yfinance as yf
+"""OHLCV entry point used by the app and the factor engine.
+
+The provider comes from ``BACKTEST_DATA_PROVIDER`` (default ``yahoo``).
+"""
+
+from __future__ import annotations
+
 import pandas as pd
 
+from providers import get_provider
+from providers.base import empty_ohlcv
 
-def fetch_data(symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """從 Yahoo Finance 取得 OHLCV 歷史資料。"""
+
+def fetch_data(
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    provider: str | None = None,
+) -> pd.DataFrame:
+    """取得 OHLCV。``provider`` 省略時用環境變數，預設 Yahoo。
+
+    網路或解析錯誤回傳空表，跟原本的 Yahoo helper 一樣。
+    來源設定錯誤（未知名稱、缺 API key）會往外丟。
+    """
+    client = get_provider(provider)
     try:
-        ticker = yf.Ticker(symbol)
-        df = ticker.history(start=start_date, end=end_date, auto_adjust=True)
-        if df.empty:
-            return pd.DataFrame()
-        # 移除時區資訊
-        if df.index.tz is not None:
-            df.index = df.index.tz_localize(None)
-        cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
-        return df[cols]
-    except Exception as e:
-        print(f"Error fetching {symbol}: {e}")
-        return pd.DataFrame()
+        return client.fetch_ohlcv(symbol, start_date, end_date)
+    except Exception as exc:
+        print(f"Error fetching {symbol} from {client.name}: {exc}")
+        return empty_ohlcv()

@@ -7,6 +7,12 @@ import streamlit as st
 def fetch_fundamentals(symbols: list) -> pd.DataFrame:
     """
     Fetch fundamental data for a list of stock symbols.
+
+    This is a current Yahoo ``ticker.info`` snapshot, not point-in-time
+    history. Screening on it inside a backtest can look ahead. It stays
+    on Yahoo when the price provider changes; that switch does not cover
+    fundamentals.
+
     Returns a DataFrame with columns:
     symbol, PE, PB, ROE, RevenueGrowth, EarningsGrowth, MarketCap
     """

@@ -8,3 +8,5 @@ dist/
 build/
 .venv/
 venv/
+data_cache/
+.pytest_cache/

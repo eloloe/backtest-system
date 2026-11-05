@@ -8,10 +8,14 @@ Factors can be freely enabled/disabled and weighted by the user.
 ─────────────────────────────────────────────────────────────
 """
 
+import os
+
 import numpy as np
 import pandas as pd
-import yfinance as yf
 import streamlit as st
+
+from data_fetcher import fetch_data
+from providers import DataProviderConfigError
 
 
 # ── Factor Registry ─────────────────────────────────────────
@@ -62,11 +66,13 @@ FACTOR_REGISTRY: dict[str, dict] = {
 
 # ── Price-based Factor Computation ──────────────────────────
 
-@st.cache_data(ttl=86400)
 def fetch_price_factors(symbols: tuple, start: str, end: str) -> pd.DataFrame:
     """
     Compute Momentum (12-month total return) and annualised Volatility
     for each symbol using historical price data.
+
+    Prices come from ``data_fetcher.fetch_data`` so they follow the same
+    provider and adjustment rules as the backtest.
 
     Parameters
     ----------
@@ -77,11 +83,20 @@ def fetch_price_factors(symbols: tuple, start: str, end: str) -> pd.DataFrame:
     -------
     DataFrame with columns: symbol, Momentum, Volatility
     """
+    # Included in the cache key so a provider switch does not reuse
+    # another vendor's momentum and volatility.
+    provider = os.environ.get("BACKTEST_DATA_PROVIDER", "yahoo").strip().lower() or "yahoo"
+    return _fetch_price_factors_cached(symbols, start, end, provider)
+
+
+@st.cache_data(ttl=86400)
+def _fetch_price_factors_cached(
+    symbols: tuple, start: str, end: str, provider: str
+) -> pd.DataFrame:
     rows = []
     for sym in symbols:
         try:
-            ticker = yf.Ticker(sym)
-            hist = ticker.history(start=start, end=end, auto_adjust=True)
+            hist = fetch_data(sym, start, end, provider=provider)
             if hist.empty or len(hist) < 20:
                 raise ValueError("insufficient data")
 
@@ -91,6 +106,8 @@ def fetch_price_factors(symbols: tuple, start: str, end: str) -> pd.DataFrame:
             volatility = daily_ret.std() * np.sqrt(252)
 
             rows.append({"symbol": sym, "Momentum": momentum, "Volatility": volatility})
+        except DataProviderConfigError:
+            raise
         except Exception:
             rows.append({"symbol": sym, "Momentum": np.nan, "Volatility": np.nan})
 
