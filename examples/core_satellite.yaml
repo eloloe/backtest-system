@@ -1,0 +1,29 @@
+# 核心衛星。70/30 只在一開始把資金切開。
+# 之後兩袖各自漲跌，不拉回 70/30，也沒有組合優化。
+
+strategy: core_satellite
+tickers: [AAPL, MSFT, GOOGL, AMZN]
+benchmark: SPY
+start: 2018-01-01
+end: 2024-01-01
+initial_capital: 100000
+commission: 0.001
+slippage: 0.0005
+risk_free_rate: 0.04
+provider: yahoo
+output_dir: output/core_satellite
+warmup_bars: 120
+
+walk_forward: false
+
+core_satellite:
+  core_weight: 0.70
+  satellite_weight: 0.30
+  core: buy_and_hold
+  core_symbol: SPY          # 省略的話，核心跟衛星用同一份 tickers，等權
+  satellite: trend_stop
+  satellite_params:
+    trend_window: 100
+    ma_type: SMA
+    stop_mode: percent
+    stop_pct: 0.08

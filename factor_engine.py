@@ -12,7 +12,6 @@ import os
 
 import numpy as np
 import pandas as pd
-import streamlit as st
 
 from data_fetcher import fetch_data
 from providers import DataProviderConfigError
@@ -96,7 +95,7 @@ def fetch_price_factors(symbols: tuple, start: str, end: str) -> pd.DataFrame:
 
     Parameters
     ----------
-    symbols : tuple  (hashable so Streamlit cache works)
+    symbols : tuple  (hashable so the in-process cache can key it)
     start, end : str  ISO date strings
 
     Returns
@@ -109,8 +108,31 @@ def fetch_price_factors(symbols: tuple, start: str, end: str) -> pd.DataFrame:
     return _fetch_price_factors_cached(symbols, start, end, provider)
 
 
-@st.cache_data(ttl=86400)
+# Process-local cache. The key includes the provider so a switch does not
+# reuse another vendor's momentum. ``.clear()`` drops it; tests rely on that.
+_PRICE_FACTOR_CACHE: dict[tuple, pd.DataFrame] = {}
+
+
 def _fetch_price_factors_cached(
+    symbols: tuple, start: str, end: str, provider: str
+) -> pd.DataFrame:
+    key = (tuple(symbols), str(start), str(end), str(provider))
+    cached = _PRICE_FACTOR_CACHE.get(key)
+    if cached is not None:
+        return cached.copy()
+    frame = _compute_price_factors(symbols, start, end, provider)
+    _PRICE_FACTOR_CACHE[key] = frame
+    return frame.copy()
+
+
+def _clear_price_factor_cache() -> None:
+    _PRICE_FACTOR_CACHE.clear()
+
+
+_fetch_price_factors_cached.clear = _clear_price_factor_cache  # type: ignore[attr-defined]
+
+
+def _compute_price_factors(
     symbols: tuple, start: str, end: str, provider: str
 ) -> pd.DataFrame:
     rows = []

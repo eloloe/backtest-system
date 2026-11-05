@@ -1,0 +1,32 @@
+# 趨勢停損。金鑰放環境變數，不要寫進這個檔。
+# 價格來源：BACKTEST_DATA_PROVIDER，預設 yahoo。Tiingo / Polygon / Shioaji 的 key 也在環境變數。
+
+strategy: trend_stop
+tickers: [SPY, QQQ]
+benchmark: SPY
+start: 2016-01-01
+end: 2024-01-01
+initial_capital: 100000
+commission: 0.001
+slippage: 0.0005
+risk_free_rate: 0.04
+provider: yahoo
+output_dir: output/trend_stop
+
+# 均線暖機用。訊號在 start 之前清成空手，第一筆仍是區間內的下一根開盤。
+warmup_bars: 120
+
+walk_forward: false
+train_months: 24
+test_months: 6
+gap_days: 21
+holdout_months: 12
+open_holdout: false
+
+params:
+  trend_window: 100
+  ma_type: SMA
+  stop_mode: atr          # atr、percent，或 tighter（兩者取較緊）
+  atr_period: 14
+  atr_mult: 3.0
+  stop_pct: 0.08          # stop_mode 含百分比時才用

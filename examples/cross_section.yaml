@@ -1,0 +1,27 @@
+# 橫截面多因子。每次再平衡只用當天已公開的財報（point-in-time）和當天以前的收盤。
+# 不讀 Yahoo 今天的快照。金鑰不要寫在這裡；FMP 若要更長的財報，設 FMP_API_KEY。
+
+strategy: cross_section
+tickers: [AAPL, MSFT, GOOGL, AMZN, META, NVDA, JPM, XOM]
+benchmark: SPY
+start: 2018-01-01
+end: 2024-01-01
+initial_capital: 100000
+commission: 0.001
+slippage: 0.0005
+risk_free_rate: 0.04
+provider: yahoo
+output_dir: output/cross_section
+warmup_bars: 320
+
+walk_forward: false
+
+cross_section:
+  top_n: 3
+  weighting: equal          # equal，或 risk（波動倒數，不是優化器）
+  rebalance_months: 1       # 1 = 每個月末；3 = 每第三個月末，從第一個月算起
+  momentum_lookback: 252
+  momentum_skip: 21         # 用 t-21 的收盤，不把最近一個月算進動能
+  vol_lookback: 63
+  momentum_weight: 0.5
+  value_weight: 0.5         # 價值是 1/PE。PE 缺了或不大於 0，這期不排這檔
