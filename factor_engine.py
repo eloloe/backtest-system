@@ -66,13 +66,33 @@ FACTOR_REGISTRY: dict[str, dict] = {
 
 # ── Price-based Factor Computation ──────────────────────────
 
+def price_factor_bounds(as_of) -> tuple[str, str]:
+    """Twelve-month window ending on ``as_of``.
+
+    ``end`` is exclusive, one day after ``as_of``, so the close on
+    ``as_of`` is included and nothing after it is. Callers that pass the
+    backtest end date instead will leak the sample into the score.
+    """
+    as_of_ts = pd.Timestamp(as_of)
+    if pd.isna(as_of_ts):
+        raise ValueError(f"invalid as_of date: {as_of!r}")
+    if as_of_ts.tzinfo is not None:
+        as_of_ts = pd.Timestamp(as_of_ts.strftime("%Y-%m-%d"))
+    as_of_ts = as_of_ts.normalize()
+    start = as_of_ts - pd.DateOffset(years=1)
+    end = as_of_ts + pd.Timedelta(days=1)
+    return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+
+
 def fetch_price_factors(symbols: tuple, start: str, end: str) -> pd.DataFrame:
     """
     Compute Momentum (12-month total return) and annualised Volatility
     for each symbol using historical price data.
 
     Prices come from ``data_fetcher.fetch_data`` so they follow the same
-    provider and adjustment rules as the backtest.
+    provider and adjustment rules as the backtest. ``end`` is exclusive.
+    For a historical score, pass the window from ``price_factor_bounds``
+    so the series stops on the decision date.
 
     Parameters
     ----------

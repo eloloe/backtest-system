@@ -10,7 +10,12 @@ apply_factor_score() — new: composite factor scoring via factor_engine
 
 import pandas as pd
 
-from factor_engine import compute_composite_score, fetch_price_factors, rank_and_select
+from factor_engine import (
+    compute_composite_score,
+    fetch_price_factors,
+    price_factor_bounds,
+    rank_and_select,
+)
 
 
 # ── Hard-threshold Filter (unchanged) ───────────────────────
@@ -58,8 +63,7 @@ def filter_stocks(
 
 def apply_factor_score(
     df_fundamentals: pd.DataFrame,
-    start: str,
-    end: str,
+    as_of,
     active_factors: dict,
     top_n: int,
     method: str = "zscore",
@@ -68,10 +72,13 @@ def apply_factor_score(
     Merge fundamental data with price-based factors, compute composite
     score, and return the top N ranked stocks.
 
+    Momentum and volatility are measured over the twelve months ending on
+    ``as_of``. They do not see prices after that date.
+
     Parameters
     ----------
-    df_fundamentals : output of fetch_fundamentals()
-    start, end      : ISO date strings for price-factor calculation
+    df_fundamentals : output of fetch_fundamentals() or fetch_fundamentals_pit()
+    as_of           : decision date for price factors
     active_factors  : {factor_key: weight}
     top_n           : number of stocks to select
     method          : "zscore" | "rank"
@@ -88,6 +95,7 @@ def apply_factor_score(
 
     if needs_price and not df_fundamentals.empty:
         symbols_tuple = tuple(df_fundamentals["symbol"].tolist())
+        start, end = price_factor_bounds(as_of)
         df_price = fetch_price_factors(symbols_tuple, start, end)
         merged = merged.merge(df_price, on="symbol", how="left")
 
