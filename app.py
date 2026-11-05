@@ -21,6 +21,7 @@ from strategies import (
     MACross,
     RSIStrategy,
 )
+from walk_forward import WalkForwardError, pit_screen, run_walk_forward
 
 warnings.filterwarnings("ignore")
 
@@ -114,6 +115,232 @@ COLOR_BENCHMARK = "#F0883E"
 COLOR_BUY = "#3FB950"
 COLOR_SELL = "#F85149"
 COLOR_DD = "rgba(248, 81, 73, 0.25)"
+
+
+def sign_class(v: float, positive_good: bool = True) -> str:
+    if v > 0:
+        return "pos" if positive_good else "neg"
+    if v < 0:
+        return "neg" if positive_good else "pos"
+    return "neu"
+
+
+def kpi_card(label: str, value: str, sub: str = "", css_class: str = "neu") -> str:
+    return (
+        f'<div class="kpi-card">'
+        f'<div class="kpi-label">{label}</div>'
+        f'<div class="kpi-value {css_class}">{value}</div>'
+        f'<div class="kpi-sub">{sub}</div>'
+        f"</div>"
+    )
+
+
+def _finite_text(value, pattern: str) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if number != number or number in (float("inf"), float("-inf")):
+        return ""
+    return pattern.format(number)
+
+
+def _fmt_params(params) -> str:
+    if params is None:
+        return "沒有選到"
+    if not params:
+        return "不搜尋"
+    return ", ".join(f"{key}={params[key]}" for key in sorted(params))
+
+
+def _kpi_html(metrics_raw: dict) -> str:
+    tr = metrics_raw["total_return"]
+    sh = metrics_raw["sharpe"]
+    md = metrics_raw["max_drawdown"]
+    cg = metrics_raw["cagr"]
+    wr = metrics_raw["win_rate"]
+    vl = metrics_raw["annual_vol"]
+    return (
+        '<div class="kpi-grid">'
+        + kpi_card("總報酬率", f"{tr:.2%}", f"CAGR {cg:.2%}", sign_class(tr))
+        + kpi_card("夏普比率", f"{sh:.2f}", ">1 佳  >2 優秀", sign_class(sh))
+        + kpi_card("最大回撤", f"{md:.2%}", f"Calmar {metrics_raw['calmar']:.2f}", sign_class(md, False))
+        + kpi_card("年化報酬", f"{cg:.2%}", "", sign_class(cg))
+        + kpi_card("勝率", f"{wr:.1%}", f"獲利/虧損 {metrics_raw['win_loss_ratio']:.2f}x", sign_class(wr - 0.5))
+        + kpi_card("年化波動", f"{vl:.2%}", f"VaR95% {metrics_raw['var_95']:.2%}", "neg" if vl > 0.25 else "neu")
+        + "</div>"
+    )
+
+
+def render_walk_forward(
+    *,
+    universe,
+    benchmark,
+    start_date,
+    end_date,
+    initial_capital,
+    commission,
+    slippage,
+    risk_free_rate,
+    strategy_name,
+    train_months,
+    test_months,
+    gap_days,
+    holdout_months,
+    open_holdout,
+    use_live_snapshot,
+    use_screener,
+    pe_max,
+    roe_min,
+    rev_growth_min,
+    mcap_min_b,
+    use_factor_scoring,
+    active_factors,
+    factor_top_n,
+    norm_method_key,
+):
+    """Rolling train / embargo / test. The single full-sample path is not drawn."""
+    if use_live_snapshot:
+        st.warning(
+            "Walk-forward 不使用 Yahoo 今天的快照。"
+            "有開篩選或因子時，每一折改以訓練窗第一天已公開的財報選股。"
+        )
+
+    screen = None
+    if use_screener or (use_factor_scoring and active_factors):
+        mcap = mcap_min_b * 1_000_000_000 if use_screener and mcap_min_b else None
+        screen = pit_screen(
+            pe_max=pe_max if use_screener and pe_max and pe_max > 0 else None,
+            roe_min=roe_min if use_screener and roe_min is not None and roe_min > -10 else None,
+            rev_growth_min=(
+                rev_growth_min
+                if use_screener and rev_growth_min is not None and rev_growth_min > -10
+                else None
+            ),
+            mcap_min=mcap,
+            active_factors=active_factors if use_factor_scoring else {},
+            top_n=int(factor_top_n) if use_factor_scoring else None,
+            method=norm_method_key,
+            use_thresholds=bool(use_screener),
+        )
+
+    fetch_start = (pd.Timestamp(start_date) - pd.Timedelta(days=450)).strftime("%Y-%m-%d")
+    fetch_end = str(end_date)
+    prices = {}
+    with st.spinner("下載報價，準備 walk-forward…"):
+        for sym in universe:
+            frame = fetch_data(sym, fetch_start, fetch_end)
+            if not frame.empty:
+                prices[sym] = frame
+        benchmark_close = None
+        if benchmark and str(benchmark).strip():
+            bench = fetch_data(str(benchmark).strip(), fetch_start, fetch_end)
+            if not bench.empty:
+                benchmark_close = bench["Close"]
+
+    if not prices:
+        st.error("無法取得任何歷史股價資料來進行回測！")
+        st.stop()
+
+    try:
+        result = run_walk_forward(
+            prices,
+            strategy_name,
+            start_date,
+            end_date,
+            train_months=int(train_months),
+            test_months=int(test_months),
+            gap_days=int(gap_days),
+            holdout_months=int(holdout_months),
+            open_holdout=bool(open_holdout),
+            metric="sharpe",
+            screen=screen,
+            initial_capital=float(initial_capital),
+            commission=float(commission),
+            slippage=float(slippage),
+            risk_free_rate=float(risk_free_rate),
+            benchmark=benchmark_close,
+        )
+    except WalkForwardError as exc:
+        st.error(f"Walk-forward 排不下去：{exc}")
+        st.stop()
+
+    st.markdown(f"### Walk-forward　｜　{strategy_name}")
+    research_end = result.holdout_start or pd.Timestamp(end_date)
+    st.caption(
+        f"研究區間 {pd.Timestamp(start_date):%Y-%m-%d} 到 {research_end:%Y-%m-%d}（不含結束）。"
+        f"每一折是訓練 {int(train_months)} 個月、禁運 {int(gap_days)} 個日曆日、測試 {int(test_months)} 個月。"
+        "選參只用該折訓練窗的價格；測試窗彼此不重疊。迄日都不含當天。"
+        "選股日是訓練窗的第一天。"
+    )
+    st.markdown(_kpi_html(result.metrics), unsafe_allow_html=True)
+    if any(fold.searched for fold in result.folds):
+        st.caption(
+            "上面是樣本外拼接，不是整段樣本內的績效。格點同時試了好幾組參數，Sharpe 仍可能偏高。"
+            "這裡沒有做 Deflated Sharpe 或 Holm。"
+        )
+    else:
+        st.caption("上面是樣本外拼接，不是整段樣本內的績效。這一輪沒有搜尋參數。")
+    st.plotly_chart(result.equity_figure, use_container_width=True)
+    st.plotly_chart(result.drawdown_figure, use_container_width=True)
+    st.caption("淨值只接各折的測試窗。訓練、禁運，以及沒打開的 holdout，都不在這兩張圖上。每一折從現金重新開始。")
+
+    rows = []
+    for fold in result.folds:
+        rows.append(
+            {
+                "折": fold.fold_id + 1,
+                "訓練起": fold.train_start.date().isoformat(),
+                "訓練迄": fold.train_end.date().isoformat(),
+                "測試起": fold.test_start.date().isoformat(),
+                "測試迄": fold.test_end.date().isoformat(),
+                "選股日": fold.as_of.date().isoformat(),
+                "標的": ", ".join(fold.symbols) if fold.symbols else "無",
+                "參數": _fmt_params(fold.params),
+                "訓練分數": _finite_text(fold.train_score, "{:.3f}"),
+                "測試 Sharpe": _finite_text(fold.test_sharpe, "{:.3f}"),
+                "測試總報酬": _finite_text(fold.test_total_return, "{:.2%}"),
+                "備註": fold.note,
+            }
+        )
+    fold_table = pd.DataFrame(rows)
+    st.markdown("#### 各折")
+    st.dataframe(fold_table, use_container_width=True, hide_index=True)
+    st.download_button(
+        "下載各折",
+        fold_table.to_csv(index=False).encode("utf-8-sig"),
+        "walk_forward_folds.csv",
+        "text/csv",
+    )
+
+    with st.expander("樣本外指標", expanded=False):
+        st.dataframe(
+            pd.DataFrame(list(result.metrics_display.items()), columns=["指標", "數值"]),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    if result.holdout_start is not None and result.holdout is None:
+        st.info(
+            f"末端 {result.holdout_start:%Y-%m-%d} 到 {result.holdout_end:%Y-%m-%d}（不含）"
+            "留作鎖定 holdout，這次沒有打開。打開只會另表報告，不會把它併進上面的樣本外曲線，"
+            "也不會再用它選參。不要拿那段結果回頭改格點或視窗。"
+        )
+    if result.holdout is not None:
+        st.markdown("#### 鎖定 holdout")
+        st.warning(
+            "這一段沒有參與選參，用的是最後一折已經定下的參數。"
+            "把它拿去改策略，這段就不再是留白。"
+        )
+        st.caption(
+            f"{result.holdout.start:%Y-%m-%d} 到 {result.holdout.end:%Y-%m-%d}（不含）。"
+            f"選股日改為 holdout 起點。參數：{_fmt_params(result.holdout.params)}。"
+            f"標的：{', '.join(result.holdout.symbols) if result.holdout.symbols else '無'}。"
+        )
+        st.markdown(_kpi_html(result.holdout.metrics), unsafe_allow_html=True)
+        st.plotly_chart(result.holdout.equity_figure, use_container_width=True)
+        st.plotly_chart(result.holdout.drawdown_figure, use_container_width=True)
+
 
 # ──────────────────────────────────────────────
 # 側邊欄
@@ -248,6 +475,62 @@ with st.sidebar:
         macd_slow = st.slider("慢線週期", 15, 60, 26)
         macd_signal_p = st.slider("信號線週期", 3, 20, 9)
 
+    st.markdown("### 樣本外驗證")
+    use_walk_forward = st.checkbox(
+        "Walk-forward 驗證",
+        value=False,
+        help="關掉時維持原本的整段回測。打開後只報告滾動測試窗，不把整段樣本內的淨值當結果。",
+    )
+    if use_walk_forward:
+        train_months = int(
+            st.number_input("訓練窗（月）", min_value=1, max_value=120, value=24, step=1)
+        )
+        test_months = int(
+            st.number_input("測試窗（月）", min_value=1, max_value=36, value=6, step=1)
+        )
+        gap_days = int(
+            st.number_input(
+                "禁運間隔（日曆日）",
+                min_value=1,
+                max_value=120,
+                value=21,
+                step=1,
+                help="訓練結束到測試開始，中間這幾天不拿來選參，也不計入該折的測試損益。",
+            )
+        )
+        holdout_months = int(
+            st.number_input(
+                "末端鎖定 holdout（月，0 表示不留）",
+                min_value=0,
+                max_value=60,
+                value=12,
+                step=1,
+                help="從結束日往前留一段。這段不進任何折，預設也不會被計算。",
+            )
+        )
+        open_holdout = bool(
+            st.checkbox(
+                "打開鎖定的 holdout",
+                value=False,
+                disabled=holdout_months == 0,
+                help="只另表報告最後一折已選定的參數。不要用這段結果回頭改格點或視窗。",
+            )
+        )
+        if holdout_months == 0:
+            open_holdout = False
+        st.caption(
+            "有參數的策略在內建小格點上選，買進持有不搜尋。上面的單一參數只用於一般回測。"
+            "選股日是每一折訓練窗的第一天，用當時已公開的財報，不用今天的快照。"
+            "同一折的訓練、禁運、測試不重疊；測試窗首尾相接。"
+            "多重檢定校正（Deflated Sharpe、Holm）還沒做。"
+        )
+    else:
+        train_months = 24
+        test_months = 6
+        gap_days = 21
+        holdout_months = 0
+        open_holdout = False
+
     st.markdown("---")
     run_btn = st.button("開始回測", use_container_width=True, type="primary")
 
@@ -302,6 +585,35 @@ if not run_btn:
             "- `SOL-USD` — Solana\n"
             "- `BNB-USD` — BNB"
         )
+    st.stop()
+
+if use_walk_forward:
+    render_walk_forward(
+        universe=universe_list,
+        benchmark=benchmark,
+        start_date=start_date,
+        end_date=end_date,
+        initial_capital=initial_capital,
+        commission=commission,
+        slippage=slippage,
+        risk_free_rate=risk_free_rate,
+        strategy_name=strategy_name,
+        train_months=train_months,
+        test_months=test_months,
+        gap_days=gap_days,
+        holdout_months=holdout_months,
+        open_holdout=open_holdout,
+        use_live_snapshot=use_live_snapshot,
+        use_screener=use_screener,
+        pe_max=pe_max,
+        roe_min=roe_min,
+        rev_growth_min=rev_growth_min,
+        mcap_min_b=mcap_min_b,
+        use_factor_scoring=use_factor_scoring,
+        active_factors=active_factors,
+        factor_top_n=factor_top_n,
+        norm_method_key=norm_method_key,
+    )
     st.stop()
 
 # ──────────────────────────────────────────────
@@ -503,24 +815,6 @@ st.markdown("---")
 # ──────────────────────────────────────────────
 # KPI 卡片
 # ──────────────────────────────────────────────
-def sign_class(v: float, positive_good: bool = True) -> str:
-    if v > 0:
-        return "pos" if positive_good else "neg"
-    if v < 0:
-        return "neg" if positive_good else "pos"
-    return "neu"
-
-
-def kpi_card(label: str, value: str, sub: str = "", css_class: str = "neu") -> str:
-    return (
-        f'<div class="kpi-card">'
-        f'<div class="kpi-label">{label}</div>'
-        f'<div class="kpi-value {css_class}">{value}</div>'
-        f'<div class="kpi-sub">{sub}</div>'
-        f"</div>"
-    )
-
-
 tr = metrics_raw["total_return"]
 sh = metrics_raw["sharpe"]
 md = metrics_raw["max_drawdown"]
