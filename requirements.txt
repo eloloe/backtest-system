@@ -6,6 +6,7 @@ plotly>=5.18.0
 scipy>=1.11.0
 requests>=2.31.0
 pyarrow>=14.0.0
+pyyaml>=6.0
 
 # Optional. Imported only when BACKTEST_DATA_PROVIDER=shioaji.
 # pip install -r requirements-shioaji.txt

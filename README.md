@@ -11,13 +11,16 @@
 - **商品池設定**：支援美股、ETF、指數、台股（`.TW`）、加密貨幣（`BTC-USD` 等）。預設資料來源為 Yahoo Finance，可改接 Tiingo、Polygon 或永豐 Shioaji（見下方）。
 - **基本面濾網**：以 PE、ROE、營收成長率、市值等硬門檻篩選股票池。歷史回測用起始日當時已公開的財報，不用今天的快照。
 - **多因子評分系統**：ROE / PE / PB / 營收成長 / 盈餘成長 / 動能 / 波動率等因子，可自由開關與調整權重，支援 Z-Score 與百分位排名兩種標準化，選出綜合分數 Top N。
-- **五種交易策略**：
+- **八種交易策略**：
   - 買進持有 (Buy & Hold)
   - 均線交叉 (MA Cross，SMA / EMA)
   - RSI 策略
   - 布林通道 (Bollinger Bands)
   - MACD 策略
-- **事件驅動回測引擎**：訊號在收盤決定、下一根開盤成交。美股用手續費與滑價，台股用券商手續費與賣出證交稅。多檔標的仍是等權重、各檔全進全出。
+  - 趨勢停損 (Trend + Stop)：慢均線之上才持有，再用 ATR 或百分比停損把虧損砍掉
+  - 橫截面多因子：再平衡日用當時已公開的財報和動能排名，等權或波動倒數持有前 N 名
+  - 核心衛星：一開始按固定比例切資金（例如 70/30），兩袖之後各自漲跌
+- **事件驅動回測引擎**：訊號在收盤決定、下一根開盤成交。美股用手續費與滑價，台股用券商手續費與賣出證交稅。單一名稱的策略仍是等權重、各檔全進全出。橫截面改成一個現金帳戶、按目標權重調倉；核心衛星只在一開始把資金切開。
 - **Walk-forward**：滾動的訓練窗、禁運、測試窗，樣本外淨值另計。末端可留一段鎖定的 holdout，預設不打開。一般的整段回測仍是預設。
 - **完整績效與風險分析**：
   - 報酬指標：總報酬、CAGR、年度／月度報酬熱力圖
@@ -32,15 +35,19 @@
 
 | 檔案 | 說明 |
 |------|------|
-| `app.py` | Streamlit 主程式（UI、流程整合、圖表） |
+| `app.py` | Streamlit 畫面。控件和圖留在這裡，回測呼叫 `runner` |
+| `cli.py` | 同一條回測的命令列。`python cli.py` 或 `python -m cli` |
+| `runner.py` | 讀 YAML、跑回測或 walk-forward、寫出淨值／回撤圖和指標 |
+| `examples/` | 三個策略的範例設定。沒有金鑰 |
+| `books.py` | 等權單名帳戶、目標權重調倉、兩袖相加 |
 | `data_fetcher.py` | 依設定的 provider 取得 OHLCV |
 | `providers/` | 價格來源（Yahoo / Tiingo / Polygon / Shioaji）與本機 Parquet 快取 |
 | `fundamentals.py` | 基本面入口。當下快照與 point-in-time 都從這裡進 |
 | `fundamentals_pit.py` | 依 `as_of` 用已公開財報與當時股價算 PE、PB、ROE 等 |
 | `screener.py` | 硬門檻篩選與因子評分整合 |
 | `factor_engine.py` | 因子註冊表、價格因子計算、標準化與綜合評分 |
-| `strategies.py` | 各項技術交易策略的訊號產生邏輯 |
-| `backtester.py` | 回測引擎（下一根開盤成交、美股／台股成本） |
+| `strategies.py` | 訊號，以及橫截面／核心衛星 |
+| `backtester.py` | 單一名稱的回測（下一根開盤成交、美股／台股成本） |
 | `walk_forward.py` | 滾動訓練／禁運／測試、鎖定 holdout、樣本外拼接 |
 | `metrics.py` | 績效與風險指標計算 |
 
@@ -109,7 +116,7 @@ streamlit run app.py
 
 ## 基本面（point-in-time）
 
-歷史回測的篩選與因子評分對齊回測起始日。PE、PB、ROE、營收成長、盈餘成長、市值只用該日以前看得到的財報，再搭配該日（或之前最後一個交易日）的收盤價。市值用普通股股數；沒有才退回基本或稀釋股數。動能與波動率是往回大約十二個月、結束在起始日收盤的價格；不會把回測區間後面的漲跌算進選股。選股只做這一次，沒有沿著樣本往前換股。
+歷史回測的篩選與因子評分對齊回測起始日。PE、PB、ROE、營收成長、盈餘成長、市值只用該日以前看得到的財報，再搭配該日（或之前最後一個交易日）的收盤價。市值用普通股股數；沒有才退回基本或稀釋股數。動能與波動率是往回大約十二個月、結束在起始日收盤的價格；不會把回測區間後面的漲跌算進選股。畫面上的濾網只在起始日選一次，沒有沿著樣本往前換股。橫截面策略是例外，它在每個再平衡日各自重排，見下方「橫截面多因子」。
 
 預設不需要金鑰。季報與年報來自 Yahoo 的期間財報。Yahoo 這條免費序列很短，季報大約五季、年報大約四年。更早的日期若對不上財報，ROE、PB、營收成長就是空值，硬門檻會把缺資料的標的拿掉，不會補一個數。盈餘若能對上法說日，PE 與盈餘成長可以沿用那串已公布的 EPS，公布日就是看得到的日期。抓不到法說日或申報日時，假設報表在會計期間結束後 60 個日曆天才公開。這個天數是假設，不是公司實際的申報日。要改的話設 `BACKTEST_FUNDAMENTALS_LAG_DAYS`（非負整數）。已知的法說日或申報日若比這個落後還晚，就等到那天，不會提前用落後天數把報表放出來。
 
@@ -154,7 +161,7 @@ streamlit run app.py
 
 `market="FUTURES"` 仍用美股那套手續費與滑價，而且是全額付現，不是保證金。`contract_multiplier` 把報價換成每口名目（損益 `= 口數 × 價格 × 乘數`）。`min_lot` 會把口數無條件捨去到整數倍，剩下的現金留著。兩個都不設時乘數是 1、也不取整，回測不會因為選了 FUTURES 就停住。
 
-多檔標的的做法與以前相同：每檔用等分資金各自全進全出，淨值再相加。引擎不換匯。美股和台股放在同一個組合裡時，數字會直接相加。
+單一名稱的策略仍是每檔等分資金、各自全進全出，淨值再相加。橫截面是一個現金帳戶按目標權重調倉，核心衛星只在一開始切資金，見下方「三種新策略」。引擎不換匯。美股和台股放在同一個組合裡時，數字會直接相加。
 
 跑單元測試（不需要金鑰，也不必安裝 `shioaji`）：
 
@@ -185,8 +192,11 @@ pytest
 | RSI | 週期／超賣／超買：(14, 30, 70)、(14, 20, 80)、(7, 30, 70)、(21, 30, 70) |
 | 布林通道 | 週期 20 搭配 2.0、2.5、1.5 倍標準差，以及週期 10 搭配 2.0 |
 | MACD | 快／慢／信號線：(12, 26, 9)、(8, 21, 9)、(12, 26, 5)、(5, 35, 5) |
+| 趨勢停損 | 均線 50 或 100；停損是 8% 或 10%，或 ATR 2.5／3 倍 |
+| 橫截面多因子 | 前 2 或 3 名；等權或波動倒數；動能用 63 或 126 日。比單次回測短，因為每一折只看得到窗口前的暖機 |
+| 核心衛星 | 權重固定 70/30，不搜尋。格點只換核心是買進持有還是慢趨勢、衛星是趨勢停損還是均線 |
 
-格點很小，只是不讓單一一組參數代表整個樣本。多組一起試，Sharpe 還是會偏樂觀。Deflated Sharpe、Holm 這類多重檢定校正不在這次範圍。
+格點很小，只是不讓單一一組參數代表整個樣本。多組一起試，Sharpe 還是會偏樂觀。Deflated Sharpe、Holm 這類多重檢定校正不在這次範圍。橫截面在 walk-forward 裡仍用 `fetch_fundamentals_pit`，不用 Yahoo 今天的快照。
 
 ### 鎖定的 holdout
 
@@ -198,7 +208,7 @@ pytest
 
 ### 選股時點
 
-有開基本面篩選或因子評分時，每一折的 `as_of` 是**該折訓練窗的第一天**。訓練和該折測試用同一份名單，走 `fetch_fundamentals_pit`，不呼叫 Yahoo 今天的快照。側邊欄那個前視選項在這個模式裡不起作用。動能與波動率也停在同一個 `as_of`。Holdout 若打開，名單改以 holdout 起點重算一次，參數仍是最後一折鎖定的那組。某一折篩完沒有標的，該折測試段以現金計，不另挑一組參數充數。
+有開基本面篩選或因子評分時，每一折的 `as_of` 是**該折訓練窗的第一天**。訓練和該折測試用同一份名單，走 `fetch_fundamentals_pit`，不呼叫 Yahoo 今天的快照。側邊欄那個前視選項在這個模式裡不起作用。動能與波動率也停在同一個 `as_of`。Holdout 若打開，名單改以 holdout 起點重算一次，參數仍是最後一折鎖定的那組。某一折篩完沒有標的，該折測試段以現金計，不另挑一組參數充數。橫截面不走這層名單：它在測試窗裡的每個再平衡日自己呼叫 point-in-time。
 
 跑完會畫樣本外的淨值與回撤。Holdout 打開時另外兩張。
 
@@ -211,6 +221,93 @@ streamlit run app.py
 ```bash
 pytest tests/test_walk_forward.py
 ```
+
+## 命令列
+
+Streamlit 跟命令列走同一條 `runner.run_research`。畫面只負責控件和圖。`strategies.py`、`factor_engine.py`、`books.py`、`runner.py` 不 import Streamlit。今天的 Yahoo 快照還留在 `fundamentals.py`，給畫面上那個前視選項；命令列的歷史選股不呼叫它。
+
+```bash
+pip install -r requirements.txt
+python cli.py --config examples/trend_stop.yaml
+python -m cli --config examples/cross_section.yaml --start 2018-01-01 --end 2024-01-01
+```
+
+金鑰不要寫進 YAML。價格來源用 `provider:`（或環境變數 `BACKTEST_DATA_PROVIDER`）。Tiingo、Polygon、Shioaji、FMP 的 key 仍放在原來的環境變數。設定檔裡若出現 `api_key`、`secret` 這類欄位，讀取時會直接拒絕。
+
+跑完會在 `output_dir` 寫：
+
+- `equity.html`、`drawdown.html`：淨值和回撤。Plotly 的 HTML，用瀏覽器打開。
+- `equity.csv`
+- `metrics.csv`、`metrics.json`：跟終端機印出來的是同一張表
+- 有成交時多一個 `trades.csv`。橫截面再多 `holdings.csv`，每一列是某個再平衡日當時排得進來的標的
+- 開了 walk-forward 再多 `folds.csv`。若同時 `--open-holdout`，另寫 holdout 的兩張圖
+
+`output/` 已在 `.gitignore`。
+
+```bash
+python cli.py --config examples/trend_stop.yaml --walk-forward
+python cli.py --config examples/core_satellite.yaml --no-walk-forward
+```
+
+Walk-forward 用上面那張小格點，不用 YAML `params` 裡的那一組。`--walk-forward` 和 `--no-walk-forward` 蓋過檔案裡的開關。`--open-holdout` 才會評末端那段，而且不拿它選參。
+
+範例：
+
+```yaml
+strategy: trend_stop
+tickers: [SPY, QQQ]
+benchmark: SPY
+start: 2016-01-01
+end: 2024-01-01          # 不含這一天
+initial_capital: 100000
+commission: 0.001
+slippage: 0.0005
+risk_free_rate: 0.04
+provider: yahoo          # 沒有金鑰
+output_dir: output/trend_stop
+warmup_bars: 120         # 只給均線暖機。start 之前的訊號會清成空手
+walk_forward: false
+
+params:
+  trend_window: 100
+  ma_type: SMA
+  stop_mode: atr         # atr、percent，或 tighter（兩條裡較高的停損）
+  atr_period: 14
+  atr_mult: 3.0
+  stop_pct: 0.08
+```
+
+另外兩份在 `examples/cross_section.yaml` 和 `examples/core_satellite.yaml`。
+
+## 三種新策略
+
+三個都沿用下一根開盤成交，和現有的美股手續費／滑價、台股手續費／證交稅。沒有盤中觸價。
+
+### 趨勢停損
+
+收盤在慢均線之上才做多，停損從這一段的最高收盤往下算。`atr` 是最高收盤減 ATR 倍數，`percent` 是最高收盤乘上 `(1 - stop_pct)`，`tighter` 取兩者裡較高的那條。收盤跌破停損，或收到均線下，訊號改成空手；賣出在下一根開盤。
+
+停損出場時若價格還在均線上，不會下一根就買回。要先收到均線下面，再重新站上，才算下一段。樣本一開始若已經在均線上，允許進場。`warmup_bars` 只讓均線在 `start` 當天算得動，不會把暖機期間的部位帶進區間。
+
+### 橫截面多因子
+
+小宇宙，在再平衡日收盤排名，下一根開盤調倉。再平衡日是「下一個交易日已經落到下個月」的那個收盤。樣本停在月中，不會把最後那根當成月末。`rebalance_months: 3` 是每第三個這樣的日子，從窗口裡的第一個算起。
+
+當天排得進來的東西只有：
+
+- 收盤，而且是 `as_of` 當天或更早。動能預設是 `t-21` 的收盤相對再往前 252 個交易日，最近一個月不計。
+- 呼叫端給的財報。實盤路徑是 `fetch_fundamentals_pit`，可見日規則跟基本面那一節一樣。本益比要大於 0，價值用 `1/PE`。
+- 波動倒數用的波動，也是停在 `as_of` 的收盤。年化只為了好讀，權重看的是相對大小。
+
+缺了所需的那一腿就這期不排，不會拿橫截面的中位數去補。前 N 名等權，或按波動倒數把權重加總成 1。這不是優化器：不加槓桿、不看共變異。某名沒有可用的波動時，該期退回等權。兩次再平衡之間股數不變，權重隨價格漂。`holdings.csv` 的 `as_of` 就是上面這個收盤日。
+
+### 核心衛星
+
+`core_weight` 和 `satellite_weight` 要加總為 1。資金在第一天按這個比例切開，之後各算各的，不每期拉回 70/30，也沒有均值變異或風險平價之外的求解。波動倒數只出現在衛星若選了橫截面、而且 `weighting: risk` 的時候，袖與袖之間不動。
+
+核心只能是買進持有，或同一套趨勢停損。衛星可以是趨勢停損、原本的四個技術策略，或橫截面。`core_symbol` 有填的話，核心只交易那一檔，而且這檔要在價格裡；沒填就跟衛星用同一份清單、等權。`examples/core_satellite.yaml` 是核心 SPY 買進持有 70%、衛星在股票池上做趨勢停損 30%。
+
+Walk-forward 的核心衛星格點把權重釘在 70/30，只換袖的做法，不搜尋比例。
 
 ## 免責聲明
 

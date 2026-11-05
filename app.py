@@ -8,20 +8,12 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from backtester import Backtester
-from data_fetcher import fetch_data
-from metrics import calculate_annual_returns, calculate_metrics, calculate_monthly_returns
 from fundamentals import fetch_fundamentals, fetch_fundamentals_pit, reporting_lag_days
 from factor_engine import FACTOR_REGISTRY
 from screener import apply_factor_score, filter_stocks
-from strategies import (
-    BollingerBandsStrategy,
-    BuyAndHold,
-    MACDStrategy,
-    MACross,
-    RSIStrategy,
-)
-from walk_forward import WalkForwardError, pit_screen, run_walk_forward
+from strategies import canonical_strategy
+from runner import ResearchError, RunConfig, run_research
+from walk_forward import WalkForwardError
 
 warnings.filterwarnings("ignore")
 
@@ -107,6 +99,9 @@ STRATEGY_LIST = [
     "RSI 策略",
     "布林通道 (Bollinger Bands)",
     "MACD 策略",
+    "趨勢停損 (Trend + Stop)",
+    "橫截面多因子 (Cross-Section)",
+    "核心衛星 (Core-Satellite)",
 ]
 
 PLOTLY_THEME = "plotly_dark"
@@ -151,6 +146,56 @@ def _fmt_params(params) -> str:
     if not params:
         return "不搜尋"
     return ", ".join(f"{key}={params[key]}" for key in sorted(params))
+
+
+def _draw_signal_chart(data, plot_trades) -> None:
+    fig_sig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True,
+        row_heights=[0.72, 0.28], vertical_spacing=0.04,
+    )
+    fig_sig.add_trace(
+        go.Scatter(
+            x=data.index, y=data["Close"],
+            name="收盤價", line=dict(color=COLOR_STRATEGY, width=1.5),
+        ),
+        row=1, col=1,
+    )
+    buys = plot_trades[plot_trades["action"] == "BUY"] if not plot_trades.empty else plot_trades
+    sells = plot_trades[plot_trades["action"] == "SELL"] if not plot_trades.empty else plot_trades
+    if not buys.empty:
+        fig_sig.add_trace(
+            go.Scatter(
+                x=buys["date"],
+                y=data["Close"].reindex(buys["date"]).values,
+                mode="markers", name="買入",
+                marker=dict(color=COLOR_BUY, size=12, symbol="triangle-up"),
+            ),
+            row=1, col=1,
+        )
+    if not sells.empty:
+        fig_sig.add_trace(
+            go.Scatter(
+                x=sells["date"],
+                y=data["Close"].reindex(sells["date"]).values,
+                mode="markers", name="賣出",
+                marker=dict(color=COLOR_SELL, size=12, symbol="triangle-down"),
+            ),
+            row=1, col=1,
+        )
+    if "Volume" in data.columns:
+        fig_sig.add_trace(
+            go.Bar(
+                x=data.index, y=data["Volume"],
+                name="成交量", marker_color="rgba(88,166,255,0.3)",
+            ),
+            row=2, col=1,
+        )
+    fig_sig.update_layout(
+        template=PLOTLY_THEME, height=520,
+        legend=dict(orientation="h", y=1.04),
+        margin=dict(t=40, b=40),
+    )
+    st.plotly_chart(fig_sig, use_container_width=True)
 
 
 def _kpi_html(metrics_raw: dict) -> str:
@@ -206,72 +251,64 @@ def render_walk_forward(
             "有開篩選或因子時，每一折改以訓練窗第一天已公開的財報選股。"
         )
 
-    screen = None
-    if use_screener or (use_factor_scoring and active_factors):
-        mcap = mcap_min_b * 1_000_000_000 if use_screener and mcap_min_b else None
-        screen = pit_screen(
-            pe_max=pe_max if use_screener and pe_max and pe_max > 0 else None,
-            roe_min=roe_min if use_screener and roe_min is not None and roe_min > -10 else None,
-            rev_growth_min=(
-                rev_growth_min
-                if use_screener and rev_growth_min is not None and rev_growth_min > -10
-                else None
-            ),
-            mcap_min=mcap,
-            active_factors=active_factors if use_factor_scoring else {},
-            top_n=int(factor_top_n) if use_factor_scoring else None,
-            method=norm_method_key,
-            use_thresholds=bool(use_screener),
-        )
-
-    fetch_start = (pd.Timestamp(start_date) - pd.Timedelta(days=450)).strftime("%Y-%m-%d")
-    fetch_end = str(end_date)
-    prices = {}
-    with st.spinner("下載報價，準備 walk-forward…"):
-        for sym in universe:
-            frame = fetch_data(sym, fetch_start, fetch_end)
-            if not frame.empty:
-                prices[sym] = frame
-        benchmark_close = None
-        if benchmark and str(benchmark).strip():
-            bench = fetch_data(str(benchmark).strip(), fetch_start, fetch_end)
-            if not bench.empty:
-                benchmark_close = bench["Close"]
-
-    if not prices:
-        st.error("無法取得任何歷史股價資料來進行回測！")
-        st.stop()
-
+    mcap = mcap_min_b * 1_000_000_000 if use_screener and mcap_min_b else None
+    config = RunConfig(
+        strategy=strategy_name,
+        tickers=list(universe),
+        start=str(pd.Timestamp(start_date).date()),
+        end=str(pd.Timestamp(end_date).date()),
+        benchmark=benchmark.strip() if benchmark and str(benchmark).strip() else None,
+        initial_capital=float(initial_capital),
+        commission=float(commission),
+        slippage=float(slippage),
+        risk_free_rate=float(risk_free_rate),
+        walk_forward=True,
+        train_months=int(train_months),
+        test_months=int(test_months),
+        gap_days=int(gap_days),
+        holdout_months=int(holdout_months),
+        open_holdout=bool(open_holdout),
+        params=dict(strategy_params),
+        cross_section=dict(cross_section_params),
+        core_satellite=dict(core_satellite_params),
+        use_screener=bool(use_screener),
+        use_factor_scoring=bool(use_factor_scoring and active_factors),
+        pe_max=pe_max if use_screener and pe_max and pe_max > 0 else None,
+        roe_min=roe_min if use_screener and roe_min is not None and roe_min > -10 else None,
+        rev_growth_min=(
+            rev_growth_min
+            if use_screener and rev_growth_min is not None and rev_growth_min > -10
+            else None
+        ),
+        mcap_min=mcap,
+        active_factors=dict(active_factors) if use_factor_scoring else {},
+        factor_top_n=int(factor_top_n) if use_factor_scoring else None,
+        norm_method=norm_method_key,
+    )
     try:
-        result = run_walk_forward(
-            prices,
-            strategy_name,
-            start_date,
-            end_date,
-            train_months=int(train_months),
-            test_months=int(test_months),
-            gap_days=int(gap_days),
-            holdout_months=int(holdout_months),
-            open_holdout=bool(open_holdout),
-            metric="sharpe",
-            screen=screen,
-            initial_capital=float(initial_capital),
-            commission=float(commission),
-            slippage=float(slippage),
-            risk_free_rate=float(risk_free_rate),
-            benchmark=benchmark_close,
-        )
+        with st.spinner("下載報價，準備 walk-forward…"):
+            research = run_research(config)
     except WalkForwardError as exc:
         st.error(f"Walk-forward 排不下去：{exc}")
         st.stop()
+    except ResearchError as exc:
+        st.error(str(exc))
+        st.stop()
+    for note in research.notes:
+        st.caption(note)
+    result = research.walk_forward
 
     st.markdown(f"### Walk-forward　｜　{strategy_name}")
     research_end = result.holdout_start or pd.Timestamp(end_date)
+    if canonical_strategy(strategy_name) == "cross_section":
+        selection_note = "橫截面在測試窗的再平衡日自己排名，不用訓練窗第一天的名單。"
+    else:
+        selection_note = "選股日是訓練窗的第一天。"
     st.caption(
         f"研究區間 {pd.Timestamp(start_date):%Y-%m-%d} 到 {research_end:%Y-%m-%d}（不含結束）。"
         f"每一折是訓練 {int(train_months)} 個月、禁運 {int(gap_days)} 個日曆日、測試 {int(test_months)} 個月。"
         "選參只用該折訓練窗的價格；測試窗彼此不重疊。迄日都不含當天。"
-        "選股日是訓練窗的第一天。"
+        + selection_note
     )
     st.markdown(_kpi_html(result.metrics), unsafe_allow_html=True)
     if any(fold.searched for fold in result.folds):
@@ -457,23 +494,127 @@ with st.sidebar:
 
     st.markdown("### 交易策略")
     strategy_name = st.selectbox("選擇策略", STRATEGY_LIST)
+    strategy_params = {}
+    cross_section_params = {}
+    core_satellite_params = {}
 
-    # 策略參數
+    # 策略參數。整段回測用這裡的數字；Walk-forward 改走內建小格點。
     if strategy_name == "均線交叉 (MA Cross)":
         ma_type = st.radio("均線類型", ["SMA", "EMA"], horizontal=True)
         short_window = st.slider("短期均線", 5, 100, 20)
         long_window = st.slider("長期均線", 20, 300, 60)
+        strategy_params = {
+            "short_window": int(short_window),
+            "long_window": int(long_window),
+            "ma_type": ma_type,
+        }
     elif strategy_name == "RSI 策略":
         rsi_period = st.slider("RSI 週期", 2, 50, 14)
         rsi_oversold = st.slider("超賣門檻", 10, 45, 30)
         rsi_overbought = st.slider("超買門檻", 55, 90, 70)
+        strategy_params = {
+            "period": int(rsi_period),
+            "oversold": int(rsi_oversold),
+            "overbought": int(rsi_overbought),
+        }
     elif strategy_name == "布林通道 (Bollinger Bands)":
         bb_period = st.slider("週期", 5, 50, 20)
         bb_std = st.slider("標準差倍數", 1.0, 3.5, 2.0, step=0.1)
+        strategy_params = {"period": int(bb_period), "std_dev": float(bb_std)}
     elif strategy_name == "MACD 策略":
         macd_fast = st.slider("快線週期", 5, 30, 12)
         macd_slow = st.slider("慢線週期", 15, 60, 26)
         macd_signal_p = st.slider("信號線週期", 3, 20, 9)
+        strategy_params = {
+            "fast": int(macd_fast),
+            "slow": int(macd_slow),
+            "signal_period": int(macd_signal_p),
+        }
+    elif strategy_name == "趨勢停損 (Trend + Stop)":
+        trend_window = st.slider("趨勢均線", 20, 250, 100)
+        stop_mode_label = st.radio("停損", ["ATR", "百分比", "較緊者"], horizontal=True)
+        stop_mode = {"ATR": "atr", "百分比": "percent", "較緊者": "tighter"}[stop_mode_label]
+        atr_mult = st.slider("ATR 倍數", 1.0, 5.0, 3.0, step=0.5)
+        stop_pct = st.slider("百分比停損", 0.03, 0.25, 0.08, step=0.01)
+        strategy_params = {
+            "trend_window": int(trend_window),
+            "ma_type": "SMA",
+            "stop_mode": stop_mode,
+            "atr_period": 14,
+            "atr_mult": float(atr_mult),
+            "stop_pct": float(stop_pct),
+        }
+        st.caption("收盤跌破停損或跌回均線下才出場。判斷在收盤，成交在下一根開盤，不是盤中觸價。")
+    elif strategy_name == "橫截面多因子 (Cross-Section)":
+        xs_top_n = st.slider("持有前 N 名", 1, max(len(universe_list), 1), min(3, len(universe_list)))
+        xs_weight = st.radio("權重", ["等權", "波動倒數"], horizontal=True)
+        xs_months = st.slider("每隔幾個月的月末再平衡", 1, 6, 1)
+        cross_section_params = {
+            "top_n": int(xs_top_n),
+            "weighting": "equal" if xs_weight == "等權" else "risk",
+            "rebalance_months": int(xs_months),
+            "momentum_lookback": 252,
+            "momentum_skip": 21,
+            "vol_lookback": 63,
+            "momentum_weight": 0.5,
+            "value_weight": 0.5,
+        }
+        st.caption(
+            "每個再平衡日只用當天已公開的財報和當天以前的收盤。"
+            "缺 PE 或動能的標的這期不排。權重在收盤決定，下一根開盤才調。"
+            "波動倒數不是優化器。"
+        )
+    elif strategy_name == "核心衛星 (Core-Satellite)":
+        core_weight = st.slider("核心權重", 0.50, 0.90, 0.70, step=0.05)
+        core_choice = st.selectbox("核心", ["買進持有", "慢速趨勢停損"])
+        satellite_choice = st.selectbox(
+            "衛星",
+            ["趨勢停損", "均線交叉", "RSI", "布林通道", "MACD", "橫截面多因子"],
+        )
+        core_symbol = st.text_input("核心代碼（空白＝跟衛星同一池）", value="SPY")
+        core_key = "buy_and_hold" if core_choice == "買進持有" else "trend_stop"
+        satellite_key = {
+            "趨勢停損": "trend_stop",
+            "均線交叉": "ma_cross",
+            "RSI": "rsi",
+            "布林通道": "bollinger",
+            "MACD": "macd",
+            "橫截面多因子": "cross_section",
+        }[satellite_choice]
+        if satellite_key == "trend_stop":
+            satellite_params = {"trend_window": 80, "stop_mode": "percent", "stop_pct": 0.08}
+        elif satellite_key == "cross_section":
+            satellite_params = {
+                "top_n": min(3, len(universe_list)),
+                "weighting": "equal",
+                "rebalance_months": 1,
+                "momentum_lookback": 252,
+                "momentum_skip": 21,
+                "momentum_weight": 0.5,
+                "value_weight": 0.5,
+            }
+        elif satellite_key == "ma_cross":
+            satellite_params = {"short_window": 20, "long_window": 60, "ma_type": "SMA"}
+        elif satellite_key == "rsi":
+            satellite_params = {"period": 14, "oversold": 30, "overbought": 70}
+        elif satellite_key == "bollinger":
+            satellite_params = {"period": 20, "std_dev": 2.0}
+        else:
+            satellite_params = {"fast": 12, "slow": 26, "signal_period": 9}
+        core_satellite_params = {
+            "core_weight": float(core_weight),
+            "satellite_weight": float(round(1.0 - core_weight, 10)),
+            "core": core_key,
+            "satellite": satellite_key,
+            "core_symbol": core_symbol.strip().upper() or None,
+            "core_params": (
+                {}
+                if core_key == "buy_and_hold"
+                else {"trend_window": 150, "stop_mode": "percent", "stop_pct": 0.12}
+            ),
+            "satellite_params": satellite_params,
+        }
+        st.caption("70/30 這類比例只在一開始切資金。之後兩袖各自漲跌，不拉回，也沒有優化器。")
 
     st.markdown("### 樣本外驗證")
     use_walk_forward = st.checkbox(
@@ -620,7 +761,18 @@ if use_walk_forward:
 # 執行與回測邏輯
 # ──────────────────────────────────────────────
 filtered_symbols = universe_list
-needs_fundamentals = use_screener or (use_factor_scoring and bool(active_factors))
+strategy_key = canonical_strategy(strategy_name)
+satellite_key = str(core_satellite_params.get("satellite") or "")
+owns_cross_section = strategy_key == "cross_section" or (
+    strategy_key == "core_satellite" and satellite_key == "cross_section"
+)
+needs_fundamentals = (not owns_cross_section) and (
+    use_screener or (use_factor_scoring and bool(active_factors))
+)
+if owns_cross_section and (use_screener or use_factor_scoring or use_live_snapshot):
+    st.caption(
+        "橫截面排名用每次再平衡日已公開的財報，側邊欄的一次性篩選和今天的快照這次不套用。"
+    )
 
 # Step 1: Hard-threshold fundamental filter.
 # Historical runs use statements knowable on the start date. The live
@@ -671,10 +823,10 @@ if not filtered_symbols:
         st.error("沒有股票通過基本面篩選，請放寬條件。")
     st.stop()
 
-# ── Step 2 (Integration Point): Factor Scoring ───────────────
-# If factor scoring is enabled, re-rank the filtered universe and
-# pick the top N. The backtest loop below is completely unchanged.
-if use_factor_scoring and active_factors:
+# Factor scoring re-ranks the filtered universe and keeps the top N.
+# A cross-section book ranks itself on each rebalance, so this one-shot
+# score is not applied on top of it.
+if (not owns_cross_section) and use_factor_scoring and active_factors:
     with st.spinner("正在計算因子分數並排名..."):
         # Only score stocks that survived the hard filter
         df_fun_filtered = df_fun[df_fun["symbol"].isin(filtered_symbols)]
@@ -722,85 +874,65 @@ if use_factor_scoring and active_factors:
             hide_index=True,
         )
 
-# 基準指數
-bench_equity = None
-benchmark_returns = None
-if benchmark and benchmark.strip():
-    with st.spinner(f"下載基準指數 {benchmark}…"):
-        bench_data = fetch_data(benchmark.strip(), str(start_date), str(end_date))
-    if not bench_data.empty:
-        bench_r = bench_data["Close"].pct_change().dropna()
-        benchmark_returns = bench_r
-        bench_equity = (1 + bench_r).cumprod() * initial_capital
+run_config = RunConfig(
+    strategy=strategy_name,
+    tickers=list(filtered_symbols),
+    start=str(pd.Timestamp(start_date).date()),
+    end=str(pd.Timestamp(end_date).date()),
+    benchmark=benchmark.strip() if benchmark and str(benchmark).strip() else None,
+    initial_capital=float(initial_capital),
+    commission=float(commission),
+    slippage=float(slippage),
+    risk_free_rate=float(risk_free_rate),
+    walk_forward=False,
+    params=dict(strategy_params),
+    cross_section=dict(cross_section_params),
+    core_satellite=dict(core_satellite_params),
+)
+try:
+    with st.spinner("下載歷史報價並執行策略回測…"):
+        research = run_research(run_config)
+except ResearchError as exc:
+    st.error(str(exc))
+    st.stop()
+except WalkForwardError as exc:
+    st.error(str(exc))
+    st.stop()
 
-# ──────────────────────────────────────────────
-# 建立策略並執行回測 (使用等權重投資組合)
-# ──────────────────────────────────────────────
-with st.spinner("下載歷史報價並執行策略回測…"):
-    capital_per_stock = initial_capital / len(filtered_symbols)
-    
-    all_equity_curves = []
-    all_trades = []
-    
-    for sym in filtered_symbols:
-        data = fetch_data(sym, str(start_date), str(end_date))
-        if data.empty:
-            continue
-            
-        if strategy_name == "買進持有 (Buy & Hold)":
-            strategy = BuyAndHold()
-        elif strategy_name == "均線交叉 (MA Cross)":
-            strategy = MACross(short_window=short_window, long_window=long_window, ma_type=ma_type)
-        elif strategy_name == "RSI 策略":
-            strategy = RSIStrategy(period=rsi_period, oversold=rsi_oversold, overbought=rsi_overbought)
-        elif strategy_name == "布林通道 (Bollinger Bands)":
-            strategy = BollingerBandsStrategy(period=bb_period, std_dev=bb_std)
-        elif strategy_name == "MACD 策略":
-            strategy = MACDStrategy(fast=macd_fast, slow=macd_slow, signal_period=macd_signal_p)
+for note in research.notes:
+    st.caption(note)
 
-        signals = strategy.generate_signals(data)
+equity_curve = research.equity
+returns = research.returns
+trades = research.trades
+metrics_disp = research.metrics_display
+metrics_raw = research.metrics
+monthly_ret = research.monthly_returns
+annual_ret = research.annual_returns
+bench_equity = research.benchmark_equity
+benchmark_returns = research.benchmark_returns
+data = research.chart_prices if research.chart_prices is not None else pd.DataFrame()
 
-        bt = Backtester(
-            initial_capital=capital_per_stock,
-            commission=commission,
-            slippage=slippage,
-        )
-        portfolio, trades = bt.run(data, signals, symbol=sym)
-        
-        all_equity_curves.append(portfolio["portfolio_value"])
-        if not trades.empty:
-            trades["symbol"] = sym
-            all_trades.append(trades)
-            
-    if not all_equity_curves:
-        st.error("無法取得任何歷史股價資料來進行回測！")
-        st.stop()
-        
-    df_curves = pd.concat(all_equity_curves, axis=1).ffill().fillna(0)
-    equity_curve = df_curves.sum(axis=1)
-    returns = equity_curve.pct_change().dropna()
-    
-    if all_trades:
-        trades = pd.concat(all_trades, ignore_index=True)
-        trades = trades.sort_values(by="date").reset_index(drop=True)
-    else:
-        trades = pd.DataFrame()
-
-    metrics_disp, metrics_raw = calculate_metrics(
-        equity_curve=equity_curve,
-        returns=returns,
-        benchmark_returns=benchmark_returns,
-        risk_free_rate=risk_free_rate,
+if research.holdings is not None and not research.holdings.empty:
+    st.markdown("#### 再平衡當日可知的排名")
+    st.caption(
+        "as_of 是決定權重的收盤日。動能只用該日以前的收盤；PE 來自 point-in-time，不是今天的 Yahoo 快照。"
+        "成交在下一根開盤。"
     )
-    monthly_ret = calculate_monthly_returns(equity_curve)
-    annual_ret = calculate_annual_returns(equity_curve)
+    st.dataframe(research.holdings, use_container_width=True, hide_index=True)
 
 # ──────────────────────────────────────────────
 # 標題列
 # ──────────────────────────────────────────────
 h1, h2 = st.columns([4, 1])
 with h1:
-    st.markdown(f"### 等權重投資組合 ({len(filtered_symbols)} 檔)　｜　{strategy_name}")
+    if strategy_key == "cross_section":
+        book_title = f"橫截面　｜　{strategy_name}"
+    elif strategy_key == "core_satellite":
+        book_title = f"核心衛星　｜　{strategy_name}"
+    else:
+        book_title = f"等權重投資組合 ({len(filtered_symbols)} 檔)　｜　{strategy_name}"
+    st.markdown(f"### {book_title}")
 with h2:
     csv_bytes = (
         pd.DataFrame(list(metrics_disp.items()), columns=["指標", "數值"])
@@ -1206,55 +1338,17 @@ with tab4:
             height=300,
         )
 
-        # 交易圖表
+        # 標記只畫在商品池第一檔的價格上，避免把別檔的成交點到這條線上。
         st.markdown("#### 交易信號圖")
-        fig_sig = make_subplots(
-            rows=2, cols=1, shared_xaxes=True,
-            row_heights=[0.72, 0.28], vertical_spacing=0.04,
-        )
-        fig_sig.add_trace(
-            go.Scatter(
-                x=data.index, y=data["Close"],
-                name="收盤價", line=dict(color=COLOR_STRATEGY, width=1.5),
-            ),
-            row=1, col=1,
-        )
-        buys = trades[trades["action"] == "BUY"]
-        sells = trades[trades["action"] == "SELL"]
-        if not buys.empty:
-            fig_sig.add_trace(
-                go.Scatter(
-                    x=buys["date"],
-                    y=data["Close"].reindex(buys["date"]).values,
-                    mode="markers", name="買入",
-                    marker=dict(color=COLOR_BUY, size=12, symbol="triangle-up"),
-                ),
-                row=1, col=1,
-            )
-        if not sells.empty:
-            fig_sig.add_trace(
-                go.Scatter(
-                    x=sells["date"],
-                    y=data["Close"].reindex(sells["date"]).values,
-                    mode="markers", name="賣出",
-                    marker=dict(color=COLOR_SELL, size=12, symbol="triangle-down"),
-                ),
-                row=1, col=1,
-            )
-        if "Volume" in data.columns:
-            fig_sig.add_trace(
-                go.Bar(
-                    x=data.index, y=data["Volume"],
-                    name="成交量", marker_color="rgba(88,166,255,0.3)",
-                ),
-                row=2, col=1,
-            )
-        fig_sig.update_layout(
-            template=PLOTLY_THEME, height=520,
-            legend=dict(orientation="h", y=1.04),
-            margin=dict(t=40, b=40),
-        )
-        st.plotly_chart(fig_sig, use_container_width=True)
+        plot_trades = trades
+        if research.chart_symbol and "symbol" in trades.columns:
+            plot_trades = trades[trades["symbol"] == research.chart_symbol]
+            st.caption(f"價格是 {research.chart_symbol}。其他標的的成交在上面的表格。")
+        if data is None or getattr(data, "empty", True) or "Close" not in data.columns:
+            st.caption("這一段沒有對得上的價格，所以不畫信號圖。")
+        else:
+            _draw_signal_chart(data, plot_trades)
+
 
 # ──────────────────────────────────────────────
 # 頁尾

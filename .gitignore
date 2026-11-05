@@ -10,3 +10,4 @@ build/
 venv/
 data_cache/
 .pytest_cache/
+output/

@@ -48,17 +48,11 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from backtester import Backtester
-from fundamentals import fetch_fundamentals_pit
+from fundamentals_pit import fetch_fundamentals_pit
 from metrics import calculate_metrics
 from screener import apply_factor_score, filter_stocks
-from strategies import (
-    BaseStrategy,
-    BollingerBandsStrategy,
-    BuyAndHold,
-    MACDStrategy,
-    MACross,
-    RSIStrategy,
-)
+from strategies import BaseStrategy, build_strategy
+from strategies import canonical_strategy as _strategy_key
 
 DEFAULT_TRAIN_MONTHS = 24
 DEFAULT_TEST_MONTHS = 6
@@ -98,22 +92,68 @@ DEFAULT_PARAM_GRIDS: dict[str, tuple[dict, ...]] = {
         {"fast": 12, "slow": 26, "signal_period": 5},
         {"fast": 5, "slow": 35, "signal_period": 5},
     ),
-}
-
-_STRATEGY_KEYS = {
-    "buy_and_hold": "buy_and_hold",
-    "buy & hold": "buy_and_hold",
-    "買進持有 (buy & hold)": "buy_and_hold",
-    "ma_cross": "ma_cross",
-    "ma cross": "ma_cross",
-    "均線交叉 (ma cross)": "ma_cross",
-    "rsi": "rsi",
-    "rsi 策略": "rsi",
-    "bollinger": "bollinger",
-    "bollinger bands": "bollinger",
-    "布林通道 (bollinger bands)": "bollinger",
-    "macd": "macd",
-    "macd 策略": "macd",
+    # Shorter momentum than a single full-sample run: each fold only sees
+    # the warmup bars in front of its own window.
+    "trend_stop": (
+        {"trend_window": 50, "ma_type": "SMA", "stop_mode": "percent", "stop_pct": 0.08},
+        {"trend_window": 100, "ma_type": "SMA", "stop_mode": "percent", "stop_pct": 0.10},
+        {"trend_window": 50, "ma_type": "SMA", "stop_mode": "atr", "atr_period": 14, "atr_mult": 2.5},
+        {"trend_window": 100, "ma_type": "SMA", "stop_mode": "atr", "atr_period": 14, "atr_mult": 3.0},
+    ),
+    "cross_section": (
+        {
+            "top_n": 2,
+            "weighting": "equal",
+            "rebalance_months": 3,
+            "momentum_lookback": 63,
+            "momentum_skip": 0,
+            "momentum_weight": 0.5,
+            "value_weight": 0.5,
+        },
+        {
+            "top_n": 3,
+            "weighting": "equal",
+            "rebalance_months": 3,
+            "momentum_lookback": 126,
+            "momentum_skip": 21,
+            "momentum_weight": 1.0,
+            "value_weight": 0.5,
+        },
+        {
+            "top_n": 2,
+            "weighting": "risk",
+            "rebalance_months": 1,
+            "momentum_lookback": 63,
+            "momentum_skip": 0,
+            "momentum_weight": 0.5,
+            "value_weight": 0.5,
+        },
+    ),
+    # Weights stay 70/30. The grid only changes the sleeves, not the mix.
+    "core_satellite": (
+        {
+            "core_weight": 0.70,
+            "satellite_weight": 0.30,
+            "core": "buy_and_hold",
+            "satellite": "trend_stop",
+            "satellite_params": {"trend_window": 50, "stop_mode": "percent", "stop_pct": 0.08},
+        },
+        {
+            "core_weight": 0.70,
+            "satellite_weight": 0.30,
+            "core": "buy_and_hold",
+            "satellite": "trend_stop",
+            "satellite_params": {"trend_window": 100, "stop_mode": "percent", "stop_pct": 0.12},
+        },
+        {
+            "core_weight": 0.70,
+            "satellite_weight": 0.30,
+            "core": "trend_stop",
+            "core_params": {"trend_window": 100, "stop_mode": "percent", "stop_pct": 0.10},
+            "satellite": "ma_cross",
+            "satellite_params": {"short_window": 20, "long_window": 60, "ma_type": "SMA"},
+        },
+    ),
 }
 
 _COLOR_EQUITY = "#58A6FF"
@@ -225,10 +265,10 @@ class WalkForwardResult:
 
 
 def canonical_strategy(name: str) -> str:
-    key = " ".join(str(name).strip().casefold().split())
-    if key not in _STRATEGY_KEYS:
-        raise WalkForwardError(f"unknown strategy: {name}")
-    return _STRATEGY_KEYS[key]
+    try:
+        return _strategy_key(name)
+    except ValueError as exc:
+        raise WalkForwardError(str(exc)) from exc
 
 
 def default_param_grid(strategy: str) -> tuple[dict, ...]:
@@ -240,34 +280,10 @@ def default_param_grid(strategy: str) -> tuple[dict, ...]:
 
 
 def make_strategy(strategy: str, params: Mapping | None = None) -> BaseStrategy:
-    key = canonical_strategy(strategy)
-    chosen = dict(params or {})
-    if key == "buy_and_hold":
-        return BuyAndHold()
-    if key == "ma_cross":
-        return MACross(
-            short_window=int(chosen.get("short_window", 20)),
-            long_window=int(chosen.get("long_window", 60)),
-            ma_type=str(chosen.get("ma_type", "SMA")),
-        )
-    if key == "rsi":
-        return RSIStrategy(
-            period=int(chosen.get("period", 14)),
-            oversold=int(chosen.get("oversold", 30)),
-            overbought=int(chosen.get("overbought", 70)),
-        )
-    if key == "bollinger":
-        return BollingerBandsStrategy(
-            period=int(chosen.get("period", 20)),
-            std_dev=float(chosen.get("std_dev", 2.0)),
-        )
-    if key == "macd":
-        return MACDStrategy(
-            fast=int(chosen.get("fast", 12)),
-            slow=int(chosen.get("slow", 26)),
-            signal_period=int(chosen.get("signal_period", 9)),
-        )
-    raise WalkForwardError(f"unknown strategy: {strategy}")
+    try:
+        return build_strategy(strategy, params)
+    except ValueError as exc:
+        raise WalkForwardError(str(exc)) from exc
 
 
 def pit_screen(
@@ -716,6 +732,10 @@ def _equity_for(
     stops at ``train_start``, and the frame itself stops before ``train_end``.
     """
     strategy = context.factory(dict(params))
+    if getattr(strategy, "manages_book", False):
+        return _book_equity(
+            prices, symbols, strategy, context, window_start, window_end, calendar_symbols
+        )
     ready: list[tuple[str, pd.DataFrame, pd.Series]] = []
     for symbol in symbols:
         frame = prices.get(symbol)
@@ -757,6 +777,59 @@ def _equity_for(
 
     wide = pd.concat(valued, axis=1).sort_index().ffill().fillna(per)
     equity = wide.sum(axis=1)
+    equity.name = "equity"
+    return equity
+
+
+def _book_equity(
+    prices: Mapping[str, pd.DataFrame],
+    symbols: Sequence[str],
+    strategy,
+    context: _RunContext,
+    window_start: pd.Timestamp,
+    window_end: pd.Timestamp,
+    calendar_symbols: Sequence[str],
+) -> pd.Series:
+    """A book strategy gets the whole sleeve, not one all-in account per name.
+
+    Prices stop at ``window_end``. Warmup bars, if any, sit strictly before
+    ``window_start``. The core symbol of a core-satellite sleeve is included
+    in the price map even when a screen did not keep it in ``symbols``.
+    """
+    wanted = [str(symbol) for symbol in symbols]
+    extra = getattr(strategy, "core_symbol", None)
+    if extra and extra not in wanted:
+        wanted.append(str(extra))
+    windowed: dict[str, pd.DataFrame] = {}
+    for symbol in wanted:
+        frame = prices.get(symbol)
+        if frame is None or frame.empty:
+            continue
+        history = _window_frame(frame, window_start, window_end, context.warmup_bars)
+        if not history.empty:
+            windowed[symbol] = history
+    if not windowed:
+        return _cash_on_calendar(
+            prices, calendar_symbols, window_start, window_end, context.initial_capital
+        )
+    try:
+        book = strategy.run_book(
+            windowed,
+            list(symbols),
+            window_start,
+            window_end,
+            initial_capital=context.initial_capital,
+            commission=context.commission,
+            slippage=context.slippage,
+            backtester_kwargs=context.backtester_kwargs,
+        )
+    except ValueError as exc:
+        raise WalkForwardError(str(exc)) from exc
+    equity = book.equity.dropna().astype(float).sort_index()
+    equity = equity.loc[(equity.index >= window_start) & (equity.index < window_end)]
+    equity = equity[~equity.index.duplicated(keep="last")]
+    if len(equity) < 2:
+        raise WalkForwardError("book produced fewer than two marks in the window")
     equity.name = "equity"
     return equity
 
