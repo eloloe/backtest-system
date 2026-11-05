@@ -20,7 +20,7 @@
   - 趨勢停損 (Trend + Stop)：慢均線之上才持有，再用 ATR 或百分比停損把虧損砍掉
   - 橫截面多因子：再平衡日用當時已公開的財報和動能排名，等權或波動倒數持有前 N 名
   - 核心衛星：一開始按固定比例切資金（例如 70/30），兩袖之後各自漲跌
-- **事件驅動回測引擎**：訊號在收盤決定、下一根開盤成交。美股用手續費與滑價，台股用券商手續費與賣出證交稅。單一名稱的策略仍是等權重、各檔全進全出。橫截面改成一個現金帳戶、按目標權重調倉；核心衛星只在一開始把資金切開。
+- **回測引擎**：訊號在收盤決定、下一根開盤成交。兩筆成交之間股數與現金不變，淨值用收盤價一次算完，不再用純 Python 逐日迴圈盯市。美股用手續費與滑價，台股用券商手續費與賣出證交稅。單一名稱的策略仍是等權重、各檔全進全出。橫截面是一個現金帳戶、按目標權重調倉；核心衛星只在一開始把資金切開。
 - **Walk-forward**：滾動的訓練窗、禁運、測試窗，樣本外淨值另計。末端可留一段鎖定的 holdout，預設不打開。格點有搜尋時，樣本外報酬附上 Deflated Sharpe，訓練窗的 p 值做 Holm。
 - **對照**：每次跑完都放上基準買進持有（預設 SPY 或 `0050.TW`）和一條打亂標籤或隨機進場的噪音路徑。淨值、回撤、滾動夏普由同一份報告寫出。
 - **完整績效與風險分析**：
@@ -32,28 +32,33 @@
 
 ---
 
+## 安裝
+
+```bash
+pip install -e ".[dev]"
+pytest
+python cli.py --help
+streamlit run app.py
+```
+
+`pip install -e .` 會裝上套件，並多一個 `backtest` 命令，跟 `python cli.py` 是同一條程式。沒有做可編輯安裝時，根目錄的腳本會自己把 `src/` 加進匯入路徑，`streamlit run app.py` 與 `python cli.py` 仍可從專案根目錄跑。
+
+`nautilus_trader` 不在預設依賴，也不在 `requirements.txt`。`pip install -e ".[nautilus]"` 只是預留；比較介面在問到 Nautilus 時會說明尚未接上，預設用成交明細把淨值重算一次。
+
 ## 專案結構
 
-| 檔案 | 說明 |
+實作在 `src/backtest_system/`。根目錄留下同名的薄包裝，所以舊的 `from backtester import Backtester`、`python cli.py`、`streamlit run app.py` 還能用。研究核心不 import Streamlit。今天的 Yahoo 快照快取留在根目錄的 `fundamentals.py`，給畫面上那個前視選項。
+
+| 路徑 | 說明 |
 |------|------|
-| `app.py` | Streamlit 畫面。控件和圖留在這裡，回測呼叫 `runner` |
-| `cli.py` | 同一條回測的命令列。`python cli.py` 或 `python -m cli` |
-| `runner.py` | 讀 YAML、跑回測或 walk-forward，交給 `report` 寫檔 |
+| `app.py` | Streamlit 畫面。控件和圖留在這裡 |
+| `cli.py` | `python cli.py` / `python -m cli`。實作在 `backtest_system.cli` |
+| `src/backtest_system/engine/` | 成交與帳戶。`Backtester`、等權袖、目標權重、成本、第二引擎的比較介面 |
+| `src/backtest_system/strategies/` | 訊號，以及橫截面／核心衛星 |
+| `src/backtest_system/research/` | walk-forward、Deflated Sharpe／Holm、基準與噪音、報告、runner、績效指標 |
+| `src/backtest_system/fundamentals/` | point-in-time 財報、篩選、因子。即時快照沒有快取 |
+| `src/backtest_system/providers/` | Yahoo / Tiingo / Polygon / Shioaji 與本機 Parquet 快取 |
 | `examples/` | 三個策略的範例設定。沒有金鑰 |
-| `books.py` | 等權單名帳戶、目標權重調倉、兩袖相加 |
-| `data_fetcher.py` | 依設定的 provider 取得 OHLCV |
-| `providers/` | 價格來源（Yahoo / Tiingo / Polygon / Shioaji）與本機 Parquet 快取 |
-| `fundamentals.py` | 基本面入口。當下快照與 point-in-time 都從這裡進 |
-| `fundamentals_pit.py` | 依 `as_of` 用已公開財報與當時股價算 PE、PB、ROE 等 |
-| `screener.py` | 硬門檻篩選與因子評分整合 |
-| `factor_engine.py` | 因子註冊表、價格因子計算、標準化與綜合評分 |
-| `strategies.py` | 訊號，以及橫截面／核心衛星 |
-| `backtester.py` | 單一名稱的回測（下一根開盤成交、美股／台股成本） |
-| `walk_forward.py` | 滾動訓練／禁運／測試、鎖定 holdout、樣本外拼接 |
-| `metrics.py` | 績效與風險指標計算 |
-| `multiple_testing.py` | Deflated Sharpe、PSR、Holm（旁邊附 BH） |
-| `baselines.py` | 基準的買進持有，以及打亂標籤或隨機進場 |
-| `report.py` | 淨值、回撤、滾動夏普與指標檔。命令列和畫面共用 |
 
 
 ---
@@ -165,12 +170,24 @@ streamlit run app.py
 
 `market="FUTURES"` 仍用美股那套手續費與滑價，而且是全額付現，不是保證金。`contract_multiplier` 把報價換成每口名目（損益 `= 口數 × 價格 × 乘數`）。`min_lot` 會把口數無條件捨去到整數倍，剩下的現金留著。兩個都不設時乘數是 1、也不取整，回測不會因為選了 FUTURES 就停住。
 
-單一名稱的策略仍是每檔等分資金、各自全進全出，淨值再相加。橫截面是一個現金帳戶按目標權重調倉，核心衛星只在一開始切資金，見下方「三種新策略」。引擎不換匯。美股和台股放在同一個組合裡時，數字會直接相加。
+單一名稱的策略仍是每檔等分資金、各自全進全出，淨值再相加。橫截面是一個現金帳戶按目標權重調倉，核心衛星只在一開始切資金。引擎不換匯。美股和台股放在同一個組合裡時，數字會直接相加。
 
-跑單元測試（不需要金鑰，也不必安裝 `shioaji`）：
+### 現金、股數、缺棒
+
+現金不生息，也不用保證金。期貨占位一樣全額付現。單一名稱買進時把當時付得起的現金換成部位，賣出時全部換回。沒有設 `min_lot` 時股數可以是小數，台股也不會湊成 1000 股。設了 `min_lot` 就往下取整，剩下的現金留在帳戶。
+
+收盤價不是有限數的列會先拿掉，不當訊號、也不盯市。開盤價缺失、不是有限數、或不大於 0，當天不成交。下一天再看前一根還在的收盤訊號，不會另外掛一張單放到很久以後。訊號若在有效開盤出現前翻掉，這筆就不做。
+
+等權組合用請求的檔數去除資金。沒有報價的那一檔不交易，它那一份也不分給別人，而且不會留在加總後的淨值裡。目標權重共用一個現金帳戶：收盤決定權重，下一根開盤先賣後買，買進會縮小到賣完剩下的現金付得起費用。某檔當天沒有開盤，股數不動。沒有收盤就沿用上一個收盤盯市；從來沒有收盤的名稱不計入市值。落在最後一根上的權重沒有下一根開盤，不成交。
+
+兩筆成交之間股數與現金不變，所以這段淨值是收盤價的一段乘法，不是逐日的 Python 迴圈。成本公式沒有改。`Backtester.run_reference` 仍是逐根 K 線的定義，測試用合成 OHLCV 對這兩條路徑。
+
+要用別的引擎對帳，呼叫 `load_crosscheck("reference")`，用成交明細與收盤價把淨值重算一次。`load_crosscheck("nautilus")` 是留給 Nautilus 的入口，現在沒有接上，也不會因為沒裝那個套件而讓預設回測失敗。
+
+跑單元測試（不需要金鑰，也不必安裝 `shioaji` 或 `nautilus_trader`）：
 
 ```bash
-pip install -r requirements-dev.txt
+pip install -e ".[dev]"
 pytest
 ```
 
@@ -228,12 +245,13 @@ pytest tests/test_walk_forward.py
 
 ## 命令列
 
-Streamlit 跟命令列走同一條 `runner.run_research`，圖和 `metrics.json` 都從 `report.py` 出去。畫面只負責控件和圖。`strategies.py`、`factor_engine.py`、`books.py`、`runner.py`、`multiple_testing.py`、`baselines.py`、`report.py` 不 import Streamlit。今天的 Yahoo 快照還留在 `fundamentals.py`，給畫面上那個前視選項；命令列的歷史選股不呼叫它。
+Streamlit 跟命令列走同一條 `backtest_system.research.runner.run_research`，圖和 `metrics.json` 都從 `research.report` 出去。畫面只負責控件和圖。`src/backtest_system/` 不 import Streamlit。今天的 Yahoo 快照快取還留在根目錄的 `fundamentals.py`，給畫面上那個前視選項；命令列的歷史選股不呼叫它。
 
 ```bash
-pip install -r requirements.txt
+pip install -e .
 python cli.py --config examples/trend_stop.yaml
 python -m cli --config examples/cross_section.yaml --start 2018-01-01 --end 2024-01-01
+backtest --config examples/trend_stop.yaml
 ```
 
 金鑰不要寫進 YAML。價格來源用 `provider:`（或環境變數 `BACKTEST_DATA_PROVIDER`）。Tiingo、Polygon、Shioaji、FMP 的 key 仍放在原來的環境變數。設定檔裡若出現 `api_key`、`secret` 這類欄位，讀取時會直接拒絕。

@@ -1,6 +1,7 @@
 """New strategies and the CLI. Synthetic prices only — no network, no broker keys."""
 
 import ast
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -469,9 +470,24 @@ def test_core_modules_do_not_import_streamlit():
                 continue
             assert "streamlit" not in imported, name
 
+    package = ROOT / "src" / "backtest_system"
+    for path in package.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported = [alias.name.split(".")[0] for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                imported = [node.module.split(".")[0]] if node.module else []
+            else:
+                continue
+            assert "streamlit" not in imported, str(path.relative_to(ROOT))
+
     code = (
-        "import baselines, books, cli, factor_engine, multiple_testing, report, runner, strategies, walk_forward, sys; "
+        "import baselines, books, cli, factor_engine, multiple_testing, report, runner, strategies, walk_forward, "
+        "backtest_system, backtest_system.engine, backtest_system.research.runner, sys; "
         "raise SystemExit(0 if 'streamlit' not in sys.modules else 1)"
     )
-    completed = subprocess.run([sys.executable, "-c", code], cwd=ROOT, check=False)
+    env = dict(**os.environ)
+    env["PYTHONPATH"] = os.pathsep.join([str(ROOT), str(ROOT / "src"), env.get("PYTHONPATH", "")])
+    completed = subprocess.run([sys.executable, "-c", code], cwd=ROOT, check=False, env=env)
     assert completed.returncode == 0
