@@ -8,7 +8,6 @@ environment when a run actually fetches.
 
 from __future__ import annotations
 
-import json
 import math
 import os
 from collections.abc import Mapping, Sequence
@@ -18,11 +17,18 @@ from pathlib import Path
 import pandas as pd
 import plotly.graph_objects as go
 
+from baselines import (
+    buy_and_hold_on_index,
+    infer_benchmark,
+    noise_baseline_single,
+    noise_baseline_walk_forward,
+)
 from books import prepare_frame, run_sleeve
 from metrics import calculate_annual_returns, calculate_metrics, calculate_monthly_returns
+from multiple_testing import summarize_selection
+from report import comparison_equity_figure, comparison_lines, rolling_sharpe_figure, write_report as _write_report
 from strategies import build_strategy, canonical_strategy
 from walk_forward import (
-    WalkForwardResult,
     default_param_grid,
     drawdown_figure,
     equity_figure,
@@ -137,6 +143,9 @@ class ResearchResult:
     notes: list[str]
     chart_symbol: str | None
     chart_prices: pd.DataFrame | None
+    rolling_sharpe_figure: go.Figure | None = None
+    comparison: dict = field(default_factory=dict)
+    selection: dict | None = None
 
 
 def load_run_config(path, overrides: Mapping | None = None) -> RunConfig:
@@ -166,12 +175,18 @@ def load_run_config(path, overrides: Mapping | None = None) -> RunConfig:
     if pd.Timestamp(end) <= pd.Timestamp(start):
         raise ConfigError("end must be after start")
 
-    benchmark = data.get("benchmark")
-    benchmark_text = None if benchmark is None or str(benchmark).strip() == "" else str(benchmark).strip().upper()
-    provider = data.get("provider")
-    provider_text = None if provider is None or str(provider).strip() == "" else str(provider).strip().lower()
     market = data.get("market")
     market_text = None if market is None or str(market).strip() == "" else str(market).strip()
+    if "benchmark" not in data:
+        benchmark_text = infer_benchmark(tickers, market_text)
+    else:
+        benchmark = data.get("benchmark")
+        if benchmark is False or benchmark is None or str(benchmark).strip() == "":
+            benchmark_text = None
+        else:
+            benchmark_text = str(benchmark).strip().upper()
+    provider = data.get("provider")
+    provider_text = None if provider is None or str(provider).strip() == "" else str(provider).strip().lower()
 
     params = _mapping(data.get("params") or {}, "params")
     cross_section = _mapping(data.get("cross_section") or {}, "cross_section")
@@ -243,12 +258,17 @@ def run_research(
                 fetch_symbols.append(core_symbol)
 
     notes: list[str] = []
+    injected = prices is not None
     if prices is None:
         _apply_provider(config.provider)
         fetch_start = _prefetch_start(config, key)
         prices = _fetch_prices(fetch_symbols, fetch_start, config.end)
         if config.benchmark and benchmark_close is None:
-            benchmark_close = _fetch_close(config.benchmark, fetch_start, config.end)
+            held = prices.get(config.benchmark)
+            if held is not None and not held.empty and "Close" in held.columns:
+                benchmark_close = held["Close"]
+            else:
+                benchmark_close = _fetch_close(config.benchmark, fetch_start, config.end)
     else:
         notes.append("這次用呼叫端給的價格，沒有再向資料源要。")
 
@@ -262,6 +282,9 @@ def run_research(
     if not prepared:
         raise ResearchError("沒有任何標的有報價，回測沒有開始。")
 
+    benchmark_close = _resolve_benchmark_close(
+        config, prices, prepared, benchmark_close, injected
+    )
     bench_equity, bench_returns = _benchmark(benchmark_close, config.initial_capital)
 
     if config.walk_forward:
@@ -271,6 +294,7 @@ def run_research(
             prepared,
             symbols,
             bench_returns,
+            benchmark_close,
             fundamentals_loader,
             notes,
         )
@@ -296,7 +320,7 @@ def run_research(
         raise ResearchError(str(exc)) from exc
 
     notes.extend(book.notes)
-    return _pack(
+    packed = _pack(
         config,
         book.equity,
         book.trades,
@@ -308,6 +332,7 @@ def run_research(
         chart_prices=_chart_prices(prepared, symbols, start, end),
         walk_forward=None,
     )
+    return _overlay(packed, prepared, benchmark_close, strategy=strategy)
 
 
 def strategy_params(config: RunConfig) -> dict:
@@ -321,59 +346,8 @@ def strategy_params(config: RunConfig) -> dict:
 
 
 def write_report(result: ResearchResult, output_dir) -> dict[str, Path]:
-    """Write the equity and drawdown charts plus a small metrics summary."""
-    directory = Path(output_dir)
-    directory.mkdir(parents=True, exist_ok=True)
-    equity_path = directory / "equity.html"
-    drawdown_path = directory / "drawdown.html"
-    result.equity_figure.write_html(str(equity_path), include_plotlyjs="cdn")
-    result.drawdown_figure.write_html(str(drawdown_path), include_plotlyjs="cdn")
-    result.equity.rename("equity").to_csv(directory / "equity.csv")
-
-    display_frame = pd.DataFrame(list(result.metrics_display.items()), columns=["指標", "數值"])
-    display_frame.to_csv(directory / "metrics.csv", index=False)
-    payload = {
-        "strategy": result.config.strategy,
-        "symbols": result.symbols,
-        "start": result.config.start,
-        "end": result.config.end,
-        "walk_forward": result.config.walk_forward,
-        "metrics": result.metrics_display,
-        "metrics_raw": _jsonable(result.metrics),
-        "notes": result.notes,
-    }
-    (directory / "metrics.json").write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    written = {
-        "equity_html": equity_path,
-        "drawdown_html": drawdown_path,
-        "equity_csv": directory / "equity.csv",
-        "metrics_csv": directory / "metrics.csv",
-        "metrics_json": directory / "metrics.json",
-    }
-    if result.trades is not None and not result.trades.empty:
-        result.trades.to_csv(directory / "trades.csv", index=False)
-        written["trades_csv"] = directory / "trades.csv"
-    if result.holdings is not None and not result.holdings.empty:
-        result.holdings.to_csv(directory / "holdings.csv", index=False)
-        written["holdings_csv"] = directory / "holdings.csv"
-    if result.walk_forward is not None:
-        folds = _fold_table(result.walk_forward)
-        folds.to_csv(directory / "folds.csv", index=False)
-        written["folds_csv"] = directory / "folds.csv"
-        if result.walk_forward.holdout is not None:
-            holdout = result.walk_forward.holdout
-            holdout.equity_figure.write_html(
-                str(directory / "holdout_equity.html"), include_plotlyjs="cdn"
-            )
-            holdout.drawdown_figure.write_html(
-                str(directory / "holdout_drawdown.html"), include_plotlyjs="cdn"
-            )
-            written["holdout_equity_html"] = directory / "holdout_equity.html"
-            written["holdout_drawdown_html"] = directory / "holdout_drawdown.html"
-    return written
+    """Write the shared pack: equity, drawdown, rolling Sharpe, metrics, baselines."""
+    return _write_report(result, output_dir)
 
 
 def format_metrics(display: Mapping[str, str]) -> str:
@@ -385,7 +359,7 @@ def format_metrics(display: Mapping[str, str]) -> str:
     return "\n".join(lines)
 
 
-def _run_walk(config, key, prices, symbols, bench_returns, fundamentals_loader, notes):
+def _run_walk(config, key, prices, symbols, bench_returns, benchmark_close, fundamentals_loader, notes):
     screen = None
     if key == "cross_section":
         notes.append("橫截面策略在每個測試窗裡自己排名，這次沒有再套一層篩選。")
@@ -444,7 +418,7 @@ def _run_walk(config, key, prices, symbols, bench_returns, fundamentals_loader, 
     )
     notes.append("這條淨值是各折測試窗接起來的，不是整段樣本內的績效。")
     if any(fold.searched for fold in wf.folds):
-        notes.append("參數用的是內建小格點，不是這份設定裡的單一參數。Deflated Sharpe 和 Holm 沒有做。")
+        notes.append("參數用的是內建小格點，不是這份設定裡的單一參數。")
     packed = _pack(
         config,
         wf.oos_equity,
@@ -457,12 +431,14 @@ def _run_walk(config, key, prices, symbols, bench_returns, fundamentals_loader, 
         chart_prices=_chart_prices(prices, symbols, pd.Timestamp(config.start), pd.Timestamp(config.end)),
         walk_forward=wf,
     )
-    # Keep the figures walk-forward already drew. They are only the test windows.
+    # Metrics stay the out-of-sample table, including DSR when the grid was searched.
+    # The equity figure is rebuilt with the benchmark and the noise path.
     packed.equity_figure = wf.equity_figure
     packed.drawdown_figure = wf.drawdown_figure
     packed.metrics_display = wf.metrics_display
     packed.metrics = wf.metrics
-    return packed
+    packed.selection = wf.selection
+    return _overlay(packed, prices, benchmark_close, strategy=None)
 
 
 def _pack(
@@ -582,6 +558,131 @@ def _fetch_close(symbol: str, start: str, end: str) -> pd.Series | None:
     return frame["Close"]
 
 
+def _overlay(result: ResearchResult, prices, benchmark_close, strategy) -> ResearchResult:
+    """Attach the benchmark, the noise path, rolling Sharpe, and selection lines."""
+    comparison: dict = {}
+    extras = []
+    label = result.config.benchmark
+    if benchmark_close is not None and label:
+        curve = buy_and_hold_on_index(benchmark_close, result.equity.index, result.config.initial_capital)
+        if curve is not None:
+            scored = _score_curve(curve, result.config.risk_free_rate)
+            comparison["benchmark"] = {
+                "symbol": label,
+                "kind": "buy_and_hold",
+                "sharpe": _plain(scored.get("sharpe")),
+                "total_return": _plain(scored.get("total_return")),
+                "max_drawdown": _plain(scored.get("max_drawdown")),
+                "note": (
+                    f"{label} 是策略同一組交易日上的收盤價買進持有，不加手續費。"
+                    "策略淨值含成本。"
+                ),
+            }
+            extras.append((f"{label} 買進持有", curve, "dash", "#F0883E"))
+            result.benchmark_equity = curve
+    elif label:
+        result.notes.append(f"這次的價格裡沒有 {label}，基準買進持有先空著。")
+
+    if result.walk_forward is not None:
+        noise = noise_baseline_walk_forward(
+            prices,
+            result.walk_forward,
+            strategy_sharpe=result.metrics.get("sharpe"),
+        )
+        if result.selection is None:
+            result.selection = result.walk_forward.selection
+    else:
+        extra = {}
+        if result.config.market:
+            extra["market"] = result.config.market
+        noise = noise_baseline_single(
+            strategy,
+            prices,
+            result.symbols,
+            result.config.start,
+            result.config.end,
+            initial_capital=result.config.initial_capital,
+            commission=result.config.commission,
+            slippage=result.config.slippage,
+            market=result.config.market,
+            backtester_kwargs=extra,
+            risk_free_rate=result.config.risk_free_rate,
+            strategy_sharpe=result.metrics.get("sharpe"),
+        )
+        result.selection = summarize_selection(
+            result.returns,
+            [],
+            risk_free_rate=result.config.risk_free_rate,
+            sample="全樣本",
+        )
+
+    comparison["noise"] = noise.as_dict()
+    if noise.equity is not None and not noise.degenerate:
+        name = "隨機進場" if noise.kind == "random_entry" else "打亂標籤"
+        extras.append((name, noise.equity, "dot", "#8B949E"))
+    result.comparison = comparison
+    title = "淨值"
+    if result.equity_figure is not None and result.equity_figure.layout.title.text:
+        title = result.equity_figure.layout.title.text
+    trades = None if result.config.walk_forward else result.trades
+    result.equity_figure = comparison_equity_figure(result.equity, title, extras, trades=trades)
+    result.rolling_sharpe_figure = rolling_sharpe_figure(
+        result.returns, result.config.risk_free_rate
+    )
+    merged = dict(result.metrics_display)
+    if result.selection:
+        merged.update(result.selection.get("display") or {})
+    merged.update(comparison_lines(comparison))
+    result.metrics_display = merged
+    if comparison.get("benchmark"):
+        result.notes.append(comparison["benchmark"]["note"])
+    if noise.note:
+        result.notes.append(noise.note)
+    if result.selection and result.selection.get("note"):
+        result.notes.append(result.selection["note"])
+    return result
+
+
+def _resolve_benchmark_close(config, fetched, prepared, provided, injected: bool):
+    if not config.benchmark:
+        return None
+    if provided is not None and len(provided) > 0:
+        return provided
+    for source in (prepared, fetched):
+        if not source:
+            continue
+        frame = source.get(config.benchmark)
+        if isinstance(frame, pd.DataFrame) and "Close" in frame.columns and not frame.empty:
+            return frame["Close"]
+        if isinstance(frame, pd.Series) and len(frame) > 0:
+            return frame
+    if not injected:
+        return _fetch_close(config.benchmark, config.start, config.end)
+    return None
+
+
+def _plain(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _score_curve(equity: pd.Series, risk_free_rate: float) -> dict:
+    clean = equity.dropna().astype(float).sort_index()
+    if len(clean) < 2:
+        return {}
+    _display, raw = calculate_metrics(
+        clean,
+        clean.pct_change().dropna(),
+        risk_free_rate=risk_free_rate,
+    )
+    return raw
+
+
 def _benchmark(close: pd.Series | None, capital: float):
     if close is None or len(close) == 0:
         return None, None
@@ -604,28 +705,6 @@ def _chart_prices(prices, symbols, start, end) -> dict[str, pd.DataFrame]:
         if not view.empty:
             out[symbol] = view
     return out
-
-
-def _fold_table(result: WalkForwardResult) -> pd.DataFrame:
-    rows = []
-    for fold in result.folds:
-        rows.append(
-            {
-                "fold": fold.fold_id + 1,
-                "train_start": fold.train_start.date().isoformat(),
-                "train_end": fold.train_end.date().isoformat(),
-                "test_start": fold.test_start.date().isoformat(),
-                "test_end": fold.test_end.date().isoformat(),
-                "as_of": fold.as_of.date().isoformat(),
-                "symbols": ", ".join(fold.symbols),
-                "params": "" if not fold.params else json.dumps(fold.params, ensure_ascii=False, default=str),
-                "train_score": fold.train_score,
-                "test_sharpe": fold.test_sharpe,
-                "test_total_return": fold.test_total_return,
-                "note": fold.note,
-            }
-        )
-    return pd.DataFrame(rows)
 
 
 def _read_yaml(path) -> dict:
@@ -737,18 +816,3 @@ def _optional_number(value):
     if value is None or value == "":
         return None
     return float(value)
-
-
-def _jsonable(value):
-    if isinstance(value, Mapping):
-        return {str(key): _jsonable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(item) for item in value]
-    if hasattr(value, "item"):
-        try:
-            return _jsonable(value.item())
-        except (ValueError, AttributeError):
-            pass
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
-    return value

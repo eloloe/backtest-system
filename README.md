@@ -21,7 +21,8 @@
   - 橫截面多因子：再平衡日用當時已公開的財報和動能排名，等權或波動倒數持有前 N 名
   - 核心衛星：一開始按固定比例切資金（例如 70/30），兩袖之後各自漲跌
 - **事件驅動回測引擎**：訊號在收盤決定、下一根開盤成交。美股用手續費與滑價，台股用券商手續費與賣出證交稅。單一名稱的策略仍是等權重、各檔全進全出。橫截面改成一個現金帳戶、按目標權重調倉；核心衛星只在一開始把資金切開。
-- **Walk-forward**：滾動的訓練窗、禁運、測試窗，樣本外淨值另計。末端可留一段鎖定的 holdout，預設不打開。一般的整段回測仍是預設。
+- **Walk-forward**：滾動的訓練窗、禁運、測試窗，樣本外淨值另計。末端可留一段鎖定的 holdout，預設不打開。格點有搜尋時，樣本外報酬附上 Deflated Sharpe，訓練窗的 p 值做 Holm。
+- **對照**：每次跑完都放上基準買進持有（預設 SPY 或 `0050.TW`）和一條打亂標籤或隨機進場的噪音路徑。淨值、回撤、滾動夏普由同一份報告寫出。
 - **完整績效與風險分析**：
   - 報酬指標：總報酬、CAGR、年度／月度報酬熱力圖
   - 風險調整：Sharpe、Sortino、Calmar
@@ -37,7 +38,7 @@
 |------|------|
 | `app.py` | Streamlit 畫面。控件和圖留在這裡，回測呼叫 `runner` |
 | `cli.py` | 同一條回測的命令列。`python cli.py` 或 `python -m cli` |
-| `runner.py` | 讀 YAML、跑回測或 walk-forward、寫出淨值／回撤圖和指標 |
+| `runner.py` | 讀 YAML、跑回測或 walk-forward，交給 `report` 寫檔 |
 | `examples/` | 三個策略的範例設定。沒有金鑰 |
 | `books.py` | 等權單名帳戶、目標權重調倉、兩袖相加 |
 | `data_fetcher.py` | 依設定的 provider 取得 OHLCV |
@@ -50,6 +51,9 @@
 | `backtester.py` | 單一名稱的回測（下一根開盤成交、美股／台股成本） |
 | `walk_forward.py` | 滾動訓練／禁運／測試、鎖定 holdout、樣本外拼接 |
 | `metrics.py` | 績效與風險指標計算 |
+| `multiple_testing.py` | Deflated Sharpe、PSR、Holm（旁邊附 BH） |
+| `baselines.py` | 基準的買進持有，以及打亂標籤或隨機進場 |
+| `report.py` | 淨值、回撤、滾動夏普與指標檔。命令列和畫面共用 |
 
 
 ---
@@ -196,7 +200,7 @@ pytest
 | 橫截面多因子 | 前 2 或 3 名；等權或波動倒數；動能用 63 或 126 日。比單次回測短，因為每一折只看得到窗口前的暖機 |
 | 核心衛星 | 權重固定 70/30，不搜尋。格點只換核心是買進持有還是慢趨勢、衛星是趨勢停損還是均線 |
 
-格點很小，只是不讓單一一組參數代表整個樣本。多組一起試，Sharpe 還是會偏樂觀。Deflated Sharpe、Holm 這類多重檢定校正不在這次範圍。橫截面在 walk-forward 裡仍用 `fetch_fundamentals_pit`，不用 Yahoo 今天的快照。
+格點很小，只是不讓單一一組參數代表整個樣本。多組一起試，Sharpe 還是會偏樂觀。校正見下方「基準、噪音、Deflated Sharpe」。橫截面在 walk-forward 裡仍用 `fetch_fundamentals_pit`，不用 Yahoo 今天的快照。
 
 ### 鎖定的 holdout
 
@@ -224,7 +228,7 @@ pytest tests/test_walk_forward.py
 
 ## 命令列
 
-Streamlit 跟命令列走同一條 `runner.run_research`。畫面只負責控件和圖。`strategies.py`、`factor_engine.py`、`books.py`、`runner.py` 不 import Streamlit。今天的 Yahoo 快照還留在 `fundamentals.py`，給畫面上那個前視選項；命令列的歷史選股不呼叫它。
+Streamlit 跟命令列走同一條 `runner.run_research`，圖和 `metrics.json` 都從 `report.py` 出去。畫面只負責控件和圖。`strategies.py`、`factor_engine.py`、`books.py`、`runner.py`、`multiple_testing.py`、`baselines.py`、`report.py` 不 import Streamlit。今天的 Yahoo 快照還留在 `fundamentals.py`，給畫面上那個前視選項；命令列的歷史選股不呼叫它。
 
 ```bash
 pip install -r requirements.txt
@@ -236,11 +240,24 @@ python -m cli --config examples/cross_section.yaml --start 2018-01-01 --end 2024
 
 跑完會在 `output_dir` 寫：
 
-- `equity.html`、`drawdown.html`：淨值和回撤。Plotly 的 HTML，用瀏覽器打開。
+- `equity.html`、`drawdown.html`、`rolling_sharpe.html`：淨值、回撤、252 日滾動夏普。淨值上還有基準買進持有，以及打亂標籤或隨機進場。Plotly 的 HTML，用瀏覽器打開。
 - `equity.csv`
-- `metrics.csv`、`metrics.json`：跟終端機印出來的是同一張表
+- `metrics.csv`、`metrics.json`：跟終端機印出來的是同一張表。`metrics.json` 另外有 `comparison` 和 `selection`
+- `baselines.csv`：策略、基準、噪音各一列
 - 有成交時多一個 `trades.csv`。橫截面再多 `holdings.csv`，每一列是某個再平衡日當時排得進來的標的
-- 開了 walk-forward 再多 `folds.csv`。若同時 `--open-holdout`，另寫 holdout 的兩張圖
+- 開了 walk-forward 再多 `folds.csv`。格點有搜尋時再多 `trials.csv`（Holm 與 BH）。若同時 `--open-holdout`，另寫 holdout 的兩張圖，終端機也印那段指標
+
+## 基準、噪音、Deflated Sharpe
+
+每一次跑完都會放上兩條對照。基準是宣告的代碼，在策略同一組交易日上用收盤價買進持有，不加手續費；策略淨值含成本。YAML 省略 `benchmark` 時，台股（`.TW` / `.TWO`，或 `market: TW`）用 `0050.TW`，其餘用 `SPY`。寫 `benchmark:` 空值或 `false` 表示這次不要。
+
+噪音對照看的是時機，不是另一個絕對夏普。單一名稱的 0/1 訊號會在區間內打亂，再用同一套下一根開盤和成本重跑，種子固定為 0，做 16 次，報告中位數。訊號從頭到尾同一個方向（例如買進持有）打亂不會變，表上會寫明。自己決定權重的橫截面和核心衛星沒有單一標籤，改成各檔獨立、一半的日子持有。
+
+Deflated Sharpe 沿 Bailey and López de Prado（2014）：先算這一段扣成本報酬的單期夏普、偏度、峰度，再問它有多大機率高過 N 個獨立試驗的期望最大夏普。年化只是把這個數乘上 √252，好跟績效表的夏普放在一起。無風險利率沿用這次的設定，從每期報酬裡扣 `rate / 252`；沒設就是 0。峰度用的是常態為 3 的那種，不是 pandas 印出來的超額峰度。
+
+**N 是訓練窗裡評過的參數組次數。** 格點有 4 組、有 3 折真的在選，N 就是 12。同一組參數換一折再算一次。買進持有、或整段回測沒有搜尋，N=1，表上寫「多重檢定：不適用」，並給 PSR（這一段夏普高於零的機率），不把它叫做 Deflated Sharpe。這些試驗共用價格，並不獨立；公式仍依獨立假設把門檻抬高，所以 N 是偏保守的一刀。
+
+Holm 用在同一批試驗的訓練窗 p 值上，α 預設 0.05。p 值是「真實夏普不大於零」的單邊檢定。存活的是校正之後仍拒絕的那幾列，寫在 `trials.csv`，也出現在樣本外跑完的畫面上。BH 附在同一張表的欄位裡，判斷仍以 Holm 為準。打開鎖定 holdout 時，用同一組 N 再算一次，這一段本身沒有再搜尋。
 
 `output/` 已在 `.gitignore`。
 

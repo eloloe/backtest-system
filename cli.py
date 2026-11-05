@@ -26,7 +26,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--start", help="起始日，含當天")
     parser.add_argument("--end", help="結束日，不含當天")
     parser.add_argument("--capital", type=float, dest="initial_capital", help="初始資金")
-    parser.add_argument("--benchmark", help="基準代碼，空字串表示不要")
+    parser.add_argument("--benchmark", help="基準代碼。省略時依市場用 SPY 或 0050.TW；空字串表示不要")
     parser.add_argument("--provider", help="價格來源，金鑰仍從環境變數讀")
     parser.add_argument("--output", dest="output_dir", help="圖和指標的輸出目錄")
     parser.add_argument("--walk-forward", action="store_true", help="改跑滾動測試窗")
@@ -43,14 +43,23 @@ def main(argv: list[str] | None = None) -> int:
 
     written = write_report(result, config.output_dir)
     print(format_metrics(result.metrics_display))
+    holdout = None if result.walk_forward is None else result.walk_forward.holdout
+    if holdout is not None:
+        print()
+        print("鎖定 holdout")
+        print(format_metrics(holdout.metrics_display))
     if result.notes:
         print()
         for note in result.notes:
             print(note)
     print()
-    print(f"淨值圖  {written['equity_html']}")
-    print(f"回撤圖  {written['drawdown_html']}")
-    print(f"指標    {written['metrics_json']}")
+    print(f"淨值圖    {written['equity_html']}")
+    print(f"回撤圖    {written['drawdown_html']}")
+    print(f"滾動夏普  {written['rolling_sharpe_html']}")
+    print(f"指標      {written['metrics_json']}")
+    print(f"對照      {written['baselines_csv']}")
+    if "trials_csv" in written:
+        print(f"試驗      {written['trials_csv']}")
     return 0
 
 
