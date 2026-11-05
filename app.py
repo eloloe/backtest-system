@@ -8,6 +8,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
+from baselines import infer_benchmark
 from fundamentals import fetch_fundamentals, fetch_fundamentals_pit, reporting_lag_days
 from factor_engine import FACTOR_REGISTRY
 from screener import apply_factor_score, filter_stocks
@@ -198,6 +199,59 @@ def _draw_signal_chart(data, plot_trades) -> None:
     st.plotly_chart(fig_sig, use_container_width=True)
 
 
+def _benchmark_symbol(text, tickers) -> str:
+    cleaned = str(text or "").strip()
+    if cleaned:
+        return cleaned.upper()
+    return infer_benchmark(tickers)
+
+
+def _render_rigor(research, *, expanded: bool) -> None:
+    """Benchmark, noise, and — once a grid was searched — DSR and Holm."""
+    comparison = getattr(research, "comparison", None) or {}
+    benchmark = comparison.get("benchmark") or {}
+    noise = comparison.get("noise") or {}
+    selection = getattr(research, "selection", None) or {}
+    st.markdown("#### 對照")
+    left, middle, right = st.columns(3)
+    left.metric("策略 Sharpe", f"{float(research.metrics.get('sharpe') or 0):.2f}")
+    bench_sharpe = benchmark.get("sharpe")
+    middle.metric(
+        f"基準 {benchmark.get('symbol') or '—'}",
+        "—" if bench_sharpe is None else f"{float(bench_sharpe):.2f}",
+    )
+    noise_sharpe = noise.get("sharpe_median")
+    noise_label = "隨機進場" if noise.get("kind") == "random_entry" else "打亂標籤"
+    right.metric(noise_label, "—" if noise_sharpe is None else f"{float(noise_sharpe):.2f}")
+    if selection.get("multiple_testing"):
+        try:
+            dsr_text = f"{float(selection.get('dsr')):.3f}"
+        except (TypeError, ValueError):
+            dsr_text = "算不出"
+        holm = selection.get("holm") or {}
+        st.caption(
+            f"Deflated Sharpe {dsr_text}，N={selection.get('n_label')}。"
+            f"Holm 存活 {holm.get('n_rejected', 0)} / {holm.get('n', 0)}。"
+        )
+        rows = holm.get("rows") or []
+        if rows:
+            table = pd.DataFrame(rows)[
+                ["label", "statistic", "p_value", "threshold", "adjusted_p", "reject"]
+            ].rename(
+                columns={
+                    "label": "變體",
+                    "statistic": "訓練 Sharpe",
+                    "p_value": "p",
+                    "threshold": "Holm 門檻",
+                    "adjusted_p": "調整後 p",
+                    "reject": "存活",
+                }
+            )
+            st.dataframe(table, use_container_width=True, hide_index=True)
+    elif expanded:
+        st.caption("這次沒有在參數之間做選擇，N=1，不計算 Deflated Sharpe。")
+
+
 def _kpi_html(metrics_raw: dict) -> str:
     tr = metrics_raw["total_return"]
     sh = metrics_raw["sharpe"]
@@ -257,7 +311,7 @@ def render_walk_forward(
         tickers=list(universe),
         start=str(pd.Timestamp(start_date).date()),
         end=str(pd.Timestamp(end_date).date()),
-        benchmark=benchmark.strip() if benchmark and str(benchmark).strip() else None,
+        benchmark=_benchmark_symbol(benchmark, universe),
         initial_capital=float(initial_capital),
         commission=float(commission),
         slippage=float(slippage),
@@ -311,16 +365,11 @@ def render_walk_forward(
         + selection_note
     )
     st.markdown(_kpi_html(result.metrics), unsafe_allow_html=True)
-    if any(fold.searched for fold in result.folds):
-        st.caption(
-            "上面是樣本外拼接，不是整段樣本內的績效。格點同時試了好幾組參數，Sharpe 仍可能偏高。"
-            "這裡沒有做 Deflated Sharpe 或 Holm。"
-        )
-    else:
-        st.caption("上面是樣本外拼接，不是整段樣本內的績效。這一輪沒有搜尋參數。")
-    st.plotly_chart(result.equity_figure, use_container_width=True)
-    st.plotly_chart(result.drawdown_figure, use_container_width=True)
-    st.caption("淨值只接各折的測試窗。訓練、禁運，以及沒打開的 holdout，都不在這兩張圖上。每一折從現金重新開始。")
+    _render_rigor(research, expanded=True)
+    st.plotly_chart(research.equity_figure, use_container_width=True)
+    st.plotly_chart(research.drawdown_figure, use_container_width=True)
+    st.plotly_chart(research.rolling_sharpe_figure, use_container_width=True)
+    st.caption("淨值只接各折的測試窗。訓練、禁運，以及沒打開的 holdout，都不在這兩張圖上。每一折從現金重新開始。基準與噪音對照畫在同一張淨值上。")
 
     rows = []
     for fold in result.folds:
@@ -375,6 +424,18 @@ def render_walk_forward(
             f"標的：{', '.join(result.holdout.symbols) if result.holdout.symbols else '無'}。"
         )
         st.markdown(_kpi_html(result.holdout.metrics), unsafe_allow_html=True)
+        holdout_selection = getattr(result.holdout, "selection", None) or {}
+        if holdout_selection.get("multiple_testing"):
+            st.caption(holdout_selection.get("note") or "")
+            holdout_bits = holdout_selection.get("display") or {}
+            if holdout_bits:
+                st.dataframe(
+                    pd.DataFrame(list(holdout_bits.items()), columns=["指標", "數值"]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+        elif holdout_selection:
+            st.caption("Holdout 沿用的試驗次數是 1，不計算 Deflated Sharpe。")
         st.plotly_chart(result.holdout.equity_figure, use_container_width=True)
         st.plotly_chart(result.holdout.drawdown_figure, use_container_width=True)
 
@@ -394,9 +455,9 @@ with st.sidebar:
     )
     universe_list = [s.strip().upper() for s in universe_str.split(",") if s.strip()]
     benchmark = st.text_input(
-        "基準指數（選填）",
+        "基準指數",
         value="SPY",
-        help="用於計算 Alpha / Beta，留空則跳過",
+        help="買進持有這檔，畫在淨值旁邊。留空則台股用 0050.TW，其餘用 SPY。",
     )
 
     st.markdown("### 🎯 基本面濾網 (Fundamentals)")
@@ -663,7 +724,7 @@ with st.sidebar:
             "有參數的策略在內建小格點上選，買進持有不搜尋。上面的單一參數只用於一般回測。"
             "選股日是每一折訓練窗的第一天，用當時已公開的財報，不用今天的快照。"
             "同一折的訓練、禁運、測試不重疊；測試窗首尾相接。"
-            "多重檢定校正（Deflated Sharpe、Holm）還沒做。"
+            "格點多於一組時，樣本外淨值會附上 Deflated Sharpe，訓練窗的 p 值做 Holm。"
         )
     else:
         train_months = 24
@@ -879,7 +940,7 @@ run_config = RunConfig(
     tickers=list(filtered_symbols),
     start=str(pd.Timestamp(start_date).date()),
     end=str(pd.Timestamp(end_date).date()),
-    benchmark=benchmark.strip() if benchmark and str(benchmark).strip() else None,
+    benchmark=_benchmark_symbol(benchmark, filtered_symbols),
     initial_capital=float(initial_capital),
     commission=float(commission),
     slippage=float(slippage),
@@ -909,8 +970,6 @@ metrics_disp = research.metrics_display
 metrics_raw = research.metrics
 monthly_ret = research.monthly_returns
 annual_ret = research.annual_returns
-bench_equity = research.benchmark_equity
-benchmark_returns = research.benchmark_returns
 data = research.chart_prices if research.chart_prices is not None else pd.DataFrame()
 
 if research.holdings is not None and not research.holdings.empty:
@@ -965,6 +1024,7 @@ cards_html = (
     + "</div>"
 )
 st.markdown(cards_html, unsafe_allow_html=True)
+_render_rigor(research, expanded=bool(research.selection and research.selection.get("multiple_testing")))
 
 # ──────────────────────────────────────────────
 # 頁籤
@@ -977,91 +1037,8 @@ tab1, tab2, tab3, tab4 = st.tabs(
 # TAB 1 — 績效總覽
 # ══════════════════════════════════════════════
 with tab1:
-    # ── 淨值曲線 ──
-    fig_eq = go.Figure()
-
-    # 策略淨值
-    fig_eq.add_trace(
-        go.Scatter(
-            x=equity_curve.index,
-            y=equity_curve,
-            name=f"投資組合 ({strategy_name})",
-            line=dict(color=COLOR_STRATEGY, width=2.5),
-            fill="tozeroy",
-            fillcolor="rgba(88,166,255,0.06)",
-        )
-    )
-
-    # 基準淨值
-    if bench_equity is not None:
-        be = bench_equity.reindex(equity_curve.index).ffill()
-        fig_eq.add_trace(
-            go.Scatter(
-                x=be.index,
-                y=be,
-                name=f"{benchmark} (基準)",
-                line=dict(color=COLOR_BENCHMARK, width=2, dash="dash"),
-            )
-        )
-
-    # 買賣標記
-    if not trades.empty:
-        buys = trades[trades["action"] == "BUY"]
-        sells = trades[trades["action"] == "SELL"]
-        if not buys.empty:
-            fig_eq.add_trace(
-                go.Scatter(
-                    x=buys["date"],
-                    y=equity_curve.reindex(buys["date"]).values,
-                    mode="markers",
-                    name="買入",
-                    marker=dict(color=COLOR_BUY, size=10, symbol="triangle-up"),
-                )
-            )
-        if not sells.empty:
-            fig_eq.add_trace(
-                go.Scatter(
-                    x=sells["date"],
-                    y=equity_curve.reindex(sells["date"]).values,
-                    mode="markers",
-                    name="賣出",
-                    marker=dict(color=COLOR_SELL, size=10, symbol="triangle-down"),
-                )
-            )
-
-    fig_eq.update_layout(
-        title=f"投資組合 淨值曲線",
-        xaxis_title="日期",
-        yaxis_title="投資組合價值 (USD)",
-        template=PLOTLY_THEME,
-        height=420,
-        legend=dict(orientation="h", y=1.05),
-        margin=dict(t=60, b=40),
-    )
-    st.plotly_chart(fig_eq, use_container_width=True)
-
-    # ── 回撤曲線 ──
-    dd_pct = (equity_curve - equity_curve.cummax()) / equity_curve.cummax() * 100
-    fig_dd = go.Figure()
-    fig_dd.add_trace(
-        go.Scatter(
-            x=dd_pct.index,
-            y=dd_pct,
-            name="回撤",
-            line=dict(color=COLOR_SELL, width=1.5),
-            fill="tozeroy",
-            fillcolor=COLOR_DD,
-        )
-    )
-    fig_dd.update_layout(
-        title="回撤分析 (Drawdown)",
-        xaxis_title="日期",
-        yaxis_title="回撤 (%)",
-        template=PLOTLY_THEME,
-        height=240,
-        margin=dict(t=50, b=40),
-    )
-    st.plotly_chart(fig_dd, use_container_width=True)
+    st.plotly_chart(research.equity_figure, use_container_width=True)
+    st.plotly_chart(research.drawdown_figure, use_container_width=True)
 
     # ── 年度報酬條形圖 ──
     if not annual_ret.empty:
@@ -1160,32 +1137,8 @@ with tab2:
         )
         st.plotly_chart(fig_dist, use_container_width=True)
 
-    # 滾動夏普
     st.markdown("#### 滾動夏普比率 (252 天)")
-    roll_r = returns.replace([np.inf, -np.inf], np.nan)
-    rolling_sharpe = roll_r.rolling(252).apply(
-        lambda x: (x.mean() * 252 - risk_free_rate) / (x.std() * np.sqrt(252))
-        if x.std() > 0
-        else 0
-    )
-    fig_rs = go.Figure()
-    fig_rs.add_trace(
-        go.Scatter(
-            x=rolling_sharpe.index,
-            y=rolling_sharpe,
-            name="滾動夏普",
-            line=dict(color="#BC8CFF", width=2),
-        )
-    )
-    fig_rs.add_hline(y=1, line_dash="dot", line_color=COLOR_BUY, annotation_text="良好 (>1)")
-    fig_rs.add_hline(y=0, line_dash="dot", line_color="#8B949E")
-    fig_rs.update_layout(
-        yaxis_title="夏普比率",
-        template=PLOTLY_THEME,
-        height=280,
-        margin=dict(t=20, b=40),
-    )
-    st.plotly_chart(fig_rs, use_container_width=True)
+    st.plotly_chart(research.rolling_sharpe_figure, use_container_width=True)
 
 # ══════════════════════════════════════════════
 # TAB 3 — 風險分析

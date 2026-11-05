@@ -35,7 +35,12 @@ the ones frozen above.
 
 Each test book starts in cash. Test-window returns are compounded into one
 out-of-sample equity curve. Gap days are not inserted as flat returns.
-Multiple-testing corrections (Deflated Sharpe, Holm) are out of scope.
+
+When the grid has more than one row, every scored parameter set on every
+searched fold is one trial. Deflated Sharpe is computed on the stitched
+out-of-sample returns (and again on the locked holdout, if it is opened)
+with that trial count. Holm is applied to the in-sample Sharpe p-values
+of those trials. A one-row grid, including buy and hold, keeps N at 1.
 """
 
 from __future__ import annotations
@@ -50,6 +55,7 @@ import plotly.graph_objects as go
 from backtester import Backtester
 from fundamentals_pit import fetch_fundamentals_pit
 from metrics import calculate_metrics
+from multiple_testing import sharpe_pvalue, summarize_selection
 from screener import apply_factor_score, filter_stocks
 from strategies import BaseStrategy, build_strategy
 from strategies import canonical_strategy as _strategy_key
@@ -195,6 +201,17 @@ class SampleSplit:
     gap_days: int
 
 
+@dataclass(frozen=True)
+class Trial:
+    """One parameter set scored on one training window."""
+
+    fold_id: int
+    label: str
+    params: dict
+    sharpe: float | None
+    p_value: float | None
+
+
 @dataclass
 class FoldResult:
     fold_id: int
@@ -226,6 +243,7 @@ class HoldoutResult:
     metrics: dict
     equity_figure: go.Figure
     drawdown_figure: go.Figure
+    selection: dict | None = None
 
 
 @dataclass
@@ -262,6 +280,8 @@ class WalkForwardResult:
     holdout: HoldoutResult | None
     strategy: str
     context: _RunContext = field(repr=False)
+    trials: list = field(default_factory=list, repr=False)
+    selection: dict | None = None
 
 
 def canonical_strategy(name: str) -> str:
@@ -496,14 +516,26 @@ def run_walk_forward(
 
     folds: list[FoldResult] = []
     pieces: list[pd.Series] = []
+    trials: list[Trial] = []
     for window in split.folds:
-        fold = _run_fold(prepared, window, context, metric_name)
+        fold, fold_trials = _run_fold(prepared, window, context, metric_name)
         folds.append(fold)
         pieces.append(fold.test_equity)
+        trials.extend(fold_trials)
 
     oos_equity = _stitch(pieces, context.initial_capital)
     oos_returns = oos_equity.pct_change().dropna()
     display, raw = _metrics(oos_equity, oos_returns, context)
+    searched_folds = sum(1 for fold in folds if fold.searched)
+    display, selection = _attach_selection(
+        display,
+        oos_returns,
+        trials,
+        context.risk_free_rate,
+        sample="樣本外",
+        n_param_sets=len(grid) if searched_folds else None,
+        n_folds_searched=searched_folds or None,
+    )
     result = WalkForwardResult(
         folds=folds,
         oos_equity=oos_equity,
@@ -521,6 +553,8 @@ def run_walk_forward(
         holdout=None,
         strategy=key,
         context=context,
+        trials=trials,
+        selection=selection,
     )
     if open_holdout:
         result.holdout = evaluate_locked_holdout(
@@ -564,6 +598,16 @@ def evaluate_locked_holdout(
     )
     returns = equity.pct_change().dropna()
     display, raw = _metrics(equity, returns, result.context)
+    searched_folds = sum(1 for fold in result.folds if fold.searched)
+    display, selection = _attach_selection(
+        display,
+        returns,
+        result.trials,
+        result.context.risk_free_rate,
+        sample="鎖定 holdout",
+        n_param_sets=len(result.context.param_grid) if searched_folds else None,
+        n_folds_searched=searched_folds or None,
+    )
     return HoldoutResult(
         start=result.holdout_start,
         end=result.holdout_end,
@@ -576,6 +620,7 @@ def evaluate_locked_holdout(
         metrics=raw,
         equity_figure=equity_figure(equity, "鎖定 holdout 淨值"),
         drawdown_figure=drawdown_figure(equity, "鎖定 holdout 回撤"),
+        selection=selection,
     )
 
 
@@ -632,12 +677,13 @@ def _run_fold(
     window: FoldWindow,
     context: _RunContext,
     metric: str,
-) -> FoldResult:
+) -> tuple[FoldResult, list[Trial]]:
     symbols = _names_for(context, window.as_of, context.universe)
     note = ""
     searched = False
     train_score: float | None = None
     params: dict | None = None
+    trials: list[Trial] = []
 
     if not symbols:
         note = "沒有標的通過這一折的篩選，測試段以現金計"
@@ -647,7 +693,7 @@ def _run_fold(
     else:
         searched = len(context.param_grid) > 1
         if searched:
-            params, train_score = _select(prices, symbols, window, context, metric)
+            params, train_score, trials = _select(prices, symbols, window, context, metric)
         else:
             params = dict(context.param_grid[0])
         equity = _equity_for(
@@ -661,7 +707,7 @@ def _run_fold(
         )
 
     _display, raw = _metrics(equity, equity.pct_change().dropna(), context, with_benchmark=False)
-    return FoldResult(
+    fold = FoldResult(
         fold_id=window.fold_id,
         train_start=window.train_start,
         train_end=window.train_end,
@@ -677,6 +723,7 @@ def _run_fold(
         note=note,
         test_equity=equity,
     )
+    return fold, trials
 
 
 def _select(
@@ -685,10 +732,13 @@ def _select(
     window: FoldWindow,
     context: _RunContext,
     metric: str,
-) -> tuple[dict, float]:
+) -> tuple[dict, float, list[Trial]]:
     best_params: dict | None = None
     best_score = -math.inf
+    trials: list[Trial] = []
     for row in context.param_grid:
+        sharpe = None
+        p_value = None
         try:
             equity = _equity_for(
                 prices,
@@ -699,21 +749,36 @@ def _select(
                 window.train_end,
                 symbols,
             )
-            _display, raw = _metrics(
-                equity, equity.pct_change().dropna(), context, with_benchmark=False
-            )
+            rets = equity.pct_change().dropna()
+            _display, raw = _metrics(equity, rets, context, with_benchmark=False)
             score = float(raw[metric])
             if not math.isfinite(score):
                 score = -math.inf
+            try:
+                sharpe = float(raw.get("sharpe"))
+            except (TypeError, ValueError):
+                sharpe = None
+            if sharpe is not None and not math.isfinite(sharpe):
+                sharpe = None
+            p_value = sharpe_pvalue(rets, context.risk_free_rate)
         except WalkForwardError:
             score = -math.inf
+        trials.append(
+            Trial(
+                fold_id=window.fold_id,
+                label=_trial_label(window.fold_id, row),
+                params=dict(row),
+                sharpe=sharpe,
+                p_value=p_value,
+            )
+        )
         if best_params is None or score > best_score + 1e-12:
             best_score = score
             best_params = dict(row)
     if best_params is None:
         raise WalkForwardError("param_grid is empty")
     reported = None if best_score == -math.inf else best_score
-    return best_params, -math.inf if reported is None else reported
+    return best_params, -math.inf if reported is None else reported, trials
 
 
 def _equity_for(
@@ -724,6 +789,7 @@ def _equity_for(
     window_start: pd.Timestamp,
     window_end: pd.Timestamp,
     calendar_symbols: Sequence[str],
+    signal_transform=None,
 ) -> pd.Series:
     """Equal-weight book. Signals before ``window_start`` are cleared.
 
@@ -749,6 +815,8 @@ def _equity_for(
         signals = signals.reindex(history.index).fillna(0).astype("int64")
         signals = signals.copy()
         signals.loc[signals.index < window_start] = 0
+        if signal_transform is not None:
+            signals = signal_transform(signals)
         ready.append((symbol, history, signals))
 
     if not ready:
@@ -920,6 +988,37 @@ def _stitch(pieces: Sequence[pd.Series], capital: float) -> pd.Series:
     if len(out) < 2:
         raise WalkForwardError("out-of-sample equity is too short to score")
     return out
+
+
+def _attach_selection(
+    display,
+    returns,
+    trials: Sequence[Trial],
+    risk_free_rate: float,
+    *,
+    sample: str,
+    n_param_sets: int | None,
+    n_folds_searched: int | None,
+):
+    summary = summarize_selection(
+        returns,
+        [(trial.label, trial.sharpe, trial.p_value) for trial in trials],
+        risk_free_rate=risk_free_rate,
+        n_param_sets=n_param_sets,
+        n_folds_searched=n_folds_searched,
+        sample=sample,
+    )
+    merged = dict(display)
+    merged.update(summary["display"])
+    return merged, summary
+
+
+def _trial_label(fold_id: int, params: Mapping) -> str:
+    if not params:
+        body = "預設"
+    else:
+        body = ", ".join(f"{key}={params[key]}" for key in sorted(params, key=str))
+    return f"第 {fold_id + 1} 折｜{body}"
 
 
 def _metrics(equity, returns, context: _RunContext, with_benchmark: bool = True):

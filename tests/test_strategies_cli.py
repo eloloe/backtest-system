@@ -450,6 +450,9 @@ def test_core_modules_do_not_import_streamlit():
         "runner.py",
         "cli.py",
         "walk_forward.py",
+        "multiple_testing.py",
+        "baselines.py",
+        "report.py",
         "backtester.py",
         "screener.py",
         "fundamentals_pit.py",
@@ -467,7 +470,7 @@ def test_core_modules_do_not_import_streamlit():
             assert "streamlit" not in imported, name
 
     code = (
-        "import books, cli, factor_engine, runner, strategies, walk_forward, sys; "
+        "import baselines, books, cli, factor_engine, multiple_testing, report, runner, strategies, walk_forward, sys; "
         "raise SystemExit(0 if 'streamlit' not in sys.modules else 1)"
     )
     completed = subprocess.run([sys.executable, "-c", code], cwd=ROOT, check=False)
