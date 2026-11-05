@@ -11,7 +11,7 @@ from plotly.subplots import make_subplots
 from backtester import Backtester
 from data_fetcher import fetch_data
 from metrics import calculate_annual_returns, calculate_metrics, calculate_monthly_returns
-from fundamentals import fetch_fundamentals
+from fundamentals import fetch_fundamentals, fetch_fundamentals_pit, reporting_lag_days
 from factor_engine import FACTOR_REGISTRY
 from screener import apply_factor_score, filter_stocks
 from strategies import (
@@ -136,6 +136,15 @@ with st.sidebar:
     )
 
     st.markdown("### 🎯 基本面濾網 (Fundamentals)")
+    st.caption(
+        "歷史回測用起始日當時已公開的財報，不用今天的快照。"
+        "免費的 Yahoo 季報大約只有近幾季，更早的 ROE、營收成長常常是空值。"
+    )
+    use_live_snapshot = st.checkbox(
+        "改用 Yahoo 今天的快照（有前視）",
+        value=False,
+        help="勾選後篩選用的是現在的 PE、ROE。回測當天還看不到這些數字，不能當成歷史結果。",
+    )
     use_screener = st.checkbox("啟用基本面篩選", value=True)
     if use_screener:
         pe_max = st.number_input("PE (本益比) <", value=50.0)
@@ -299,11 +308,30 @@ if not run_btn:
 # 執行與回測邏輯
 # ──────────────────────────────────────────────
 filtered_symbols = universe_list
+needs_fundamentals = use_screener or (use_factor_scoring and bool(active_factors))
 
-# Step 1: Hard-threshold fundamental filter
-if use_screener:
-    with st.spinner("正在取得基本面資料並篩選..."):
-        df_fun = fetch_fundamentals(universe_list)
+# Step 1: Hard-threshold fundamental filter.
+# Historical runs use statements knowable on the start date. The live
+# snapshot is opt-in and labeled as today's numbers.
+if needs_fundamentals:
+    if use_live_snapshot:
+        st.warning(
+            "基本面用的是 Yahoo 今天的快照，不是回測起始日看得到的數字。"
+            "這樣選出來的股票含有前視，不能當成歷史結果。"
+        )
+        with st.spinner("正在取得 Yahoo 今日基本面快照..."):
+            df_fun = fetch_fundamentals(universe_list)
+    else:
+        lag_days = reporting_lag_days()
+        st.caption(
+            f"基本面對齊 {start_date:%Y-%m-%d}：只用這天以前已公開的財報。"
+            f"沒有法說日或申報日時，假設會計期間結束後 {lag_days} 天才看得到。"
+            "動能與波動率也只算到這一天的收盤。"
+        )
+        with st.spinner("正在依回測起始日整理當時可知的基本面..."):
+            df_fun = fetch_fundamentals_pit(universe_list, start_date, lag_days=lag_days)
+
+    if use_screener:
         mcap_real = mcap_min_b * 1_000_000_000 if mcap_min_b else None
         pe_val = pe_max if pe_max > 0 else None
 
@@ -319,10 +347,16 @@ if use_screener:
         st.markdown("### 📊 基本面篩選結果")
         st.dataframe(filtered_df, use_container_width=True)
 else:
-    df_fun = fetch_fundamentals(universe_list)  # needed by factor scoring even if threshold filter is off
+    df_fun = None
 
 if not filtered_symbols:
-    st.error("沒有股票通過基本面篩選！請放寬條件。")
+    if use_screener and not use_live_snapshot:
+        st.error(
+            "沒有股票通過基本面篩選。較早的日期若還沒有已公開的財報，相關欄位會是空值並被剔除。"
+            "可以放寬條件，或改勾今天的快照（那不是歷史結果）。"
+        )
+    else:
+        st.error("沒有股票通過基本面篩選，請放寬條件。")
     st.stop()
 
 # ── Step 2 (Integration Point): Factor Scoring ───────────────
@@ -334,8 +368,7 @@ if use_factor_scoring and active_factors:
         df_fun_filtered = df_fun[df_fun["symbol"].isin(filtered_symbols)]
         ranked_df = apply_factor_score(
             df_fundamentals=df_fun_filtered,
-            start=str(start_date),
-            end=str(end_date),
+            as_of=start_date,
             active_factors=active_factors,
             top_n=int(factor_top_n),
             method=norm_method_key,

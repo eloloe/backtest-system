@@ -2,19 +2,19 @@ import pandas as pd
 import yfinance as yf
 import streamlit as st
 
+from fundamentals_pit import fetch_fundamentals_pit, reporting_lag_days
+
+__all__ = ["fetch_fundamentals", "fetch_fundamentals_pit", "reporting_lag_days"]
+
 
 @st.cache_data(ttl=86400)
 def fetch_fundamentals(symbols: list) -> pd.DataFrame:
-    """
-    Fetch fundamental data for a list of stock symbols.
+    """Live Yahoo ``ticker.info`` snapshot.
 
-    This is a current Yahoo ``ticker.info`` snapshot, not point-in-time
-    history. Screening on it inside a backtest can look ahead. It stays
-    on Yahoo when the price provider changes; that switch does not cover
-    fundamentals.
-
-    Returns a DataFrame with columns:
-    symbol, PE, PB, ROE, RevenueGrowth, EarningsGrowth, MarketCap
+    These are today's PE, PB, ROE, growth, and market cap. They are not
+    what an investor could have known on a past date. Historical screens
+    must use ``fetch_fundamentals_pit`` instead. The price-provider switch
+    does not cover this snapshot; it stays on Yahoo.
     """
     data = []
     for sym in symbols:
@@ -43,11 +43,7 @@ def fetch_fundamentals(symbols: list) -> pd.DataFrame:
                 "MarketCap": None
             })
 
-    # Convert to DataFrame
     df = pd.DataFrame(data)
-    
-    # Optional: Fill empty numerical columns with NaN instead of None
     for col in ["PE", "PB", "ROE", "RevenueGrowth", "EarningsGrowth", "MarketCap"]:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-
+        df[col] = pd.to_numeric(df[col], errors="coerce")
     return df

@@ -9,7 +9,7 @@
 ## 功能特色
 
 - **商品池設定**：支援美股、ETF、指數、台股（`.TW`）、加密貨幣（`BTC-USD` 等）。預設資料來源為 Yahoo Finance，可改接 Tiingo、Polygon 或永豐 Shioaji（見下方）。
-- **基本面濾網**：以 PE、ROE、營收成長率、市值等硬門檻篩選股票池。
+- **基本面濾網**：以 PE、ROE、營收成長率、市值等硬門檻篩選股票池。歷史回測用起始日當時已公開的財報，不用今天的快照。
 - **多因子評分系統**：ROE / PE / PB / 營收成長 / 盈餘成長 / 動能 / 波動率等因子，可自由開關與調整權重，支援 Z-Score 與百分位排名兩種標準化，選出綜合分數 Top N。
 - **五種交易策略**：
   - 買進持有 (Buy & Hold)
@@ -34,7 +34,8 @@
 | `app.py` | Streamlit 主程式（UI、流程整合、圖表） |
 | `data_fetcher.py` | 依設定的 provider 取得 OHLCV |
 | `providers/` | 價格來源（Yahoo / Tiingo / Polygon / Shioaji）與本機 Parquet 快取 |
-| `fundamentals.py` | 抓取基本面資料（PE、PB、ROE…，目前仍是 Yahoo 當下快照） |
+| `fundamentals.py` | 基本面入口。當下快照與 point-in-time 都從這裡進 |
+| `fundamentals_pit.py` | 依 `as_of` 用已公開財報與當時股價算 PE、PB、ROE 等 |
 | `screener.py` | 硬門檻篩選與因子評分整合 |
 | `factor_engine.py` | 因子註冊表、價格因子計算、標準化與綜合評分 |
 | `strategies.py` | 各項技術交易策略的訊號產生邏輯 |
@@ -102,7 +103,28 @@ streamlit run app.py
 - Tiingo 與 Polygon 只接美股／ETF 日線，代碼原樣送出。台股與台指期用 Shioaji。加密貨幣仍走 Yahoo。
 - Shioaji 不還原除權息，股票成交量是張。和 Yahoo 的還原股價、成交股數不會對齊。
 - Polygon 沒有做股息調整，收盤價不會和 Yahoo／Tiingo 的總報酬價格對齊。
-- 基本面仍是 Yahoo `ticker.info` 的當下快照，拿來做歷史篩選有前視問題。這一步沒有改成 point-in-time。
+- 歷史篩選用起始日的 point-in-time 財報，不是 Yahoo 今天的快照。範圍與做不到的地方見下一節。
+
+## 基本面（point-in-time）
+
+歷史回測的篩選與因子評分對齊回測起始日。PE、PB、ROE、營收成長、盈餘成長、市值只用該日以前看得到的財報，再搭配該日（或之前最後一個交易日）的收盤價。市值用普通股股數；沒有才退回基本或稀釋股數。動能與波動率是往回大約十二個月、結束在起始日收盤的價格；不會把回測區間後面的漲跌算進選股。選股只做這一次，沒有沿著樣本往前換股。
+
+預設不需要金鑰。季報與年報來自 Yahoo 的期間財報。Yahoo 這條免費序列很短，季報大約五季、年報大約四年。更早的日期若對不上財報，ROE、PB、營收成長就是空值，硬門檻會把缺資料的標的拿掉，不會補一個數。盈餘若能對上法說日，PE 與盈餘成長可以沿用那串已公布的 EPS，公布日就是看得到的日期。抓不到法說日或申報日時，假設報表在會計期間結束後 60 個日曆天才公開。這個天數是假設，不是公司實際的申報日。要改的話設 `BACKTEST_FUNDAMENTALS_LAG_DAYS`（非負整數）。已知的法說日或申報日若比這個落後還晚，就等到那天，不會提前用落後天數把報表放出來。
+
+設了 `FMP_API_KEY` 時改向 Financial Modeling Prep 拿季報，可見日用 `filingDate`（沒有則用舊欄位 `fillingDate`，再沒有才用 `acceptedDate` 的日期）。資產負債表與損益表的申報日取較晚的那天。沒有金鑰、金鑰是空白、或請求失敗，會回到 Yahoo，不會因此不能跑。
+
+抓回來的財報面板寫進 `data_cache/fundamentals/`，跟股價同一套開關（`BACKTEST_DATA_CACHE`、`BACKTEST_DATA_CACHE_DIR`）。空結果不寫入。
+
+畫面上可以改勾「Yahoo 今天的快照」。那是 `ticker.info` 的當下數字，畫面會標明它有前視，不能當成歷史結果。
+
+做不到的事：
+
+- 這不是 Compustat、FactSet 或 TEJ，也沒有完整的 as-reported 修正史。Yahoo 或 FMP 若一季只給一個數字，那是他們現在畫面上的版本；後來的重編可能已經混在原始公布日裡。面板裡若同一季有兩版而且各有申報日，`as_of` 只會用申報日已經到的那一版。
+- 估值用的收盤價走目前的價格 provider。Yahoo 預設含除權息，配息會把歷史股價往下修，PE、PB、市值會偏一點。Shioaji 的成交價不還原，和 Yahoo 財報的股數基礎不一定對得起來。
+- 盈餘小於或等於零時 PE 留空。
+- 台股在 Yahoo 上常常沒有夠用的期間財報。缺了就是空值，篩選跳過，不估計。
+- 申報日當天就當成全天可用。若檔案是收盤後才上去，日線會早幾小時。
+- 沒有做 walk-forward，也沒有改成交與成本。
 
 ## 成交與成本
 

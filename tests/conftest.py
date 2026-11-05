@@ -10,4 +10,6 @@ def _isolated_provider_env(monkeypatch):
     monkeypatch.delenv("SHIOAJI_API_KEY", raising=False)
     monkeypatch.delenv("SHIOAJI_SECRET_KEY", raising=False)
     monkeypatch.delenv("SHIOAJI_SIMULATION", raising=False)
+    monkeypatch.delenv("FMP_API_KEY", raising=False)
+    monkeypatch.delenv("BACKTEST_FUNDAMENTALS_LAG_DAYS", raising=False)
     monkeypatch.setenv("BACKTEST_DATA_CACHE", "0")
