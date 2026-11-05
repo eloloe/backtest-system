@@ -10,7 +10,12 @@ apply_factor_score() — new: composite factor scoring via factor_engine
 
 import pandas as pd
 
-from factor_engine import compute_composite_score, fetch_price_factors, rank_and_select
+from factor_engine import (
+    compute_composite_score,
+    fetch_price_factors,
+    price_factor_window,
+    rank_and_select,
+)
 
 
 # ── Hard-threshold Filter (unchanged) ───────────────────────
@@ -63,6 +68,7 @@ def apply_factor_score(
     active_factors: dict,
     top_n: int,
     method: str = "zscore",
+    as_of: str | None = None,
 ) -> pd.DataFrame:
     """
     Merge fundamental data with price-based factors, compute composite
@@ -70,11 +76,13 @@ def apply_factor_score(
 
     Parameters
     ----------
-    df_fundamentals : output of fetch_fundamentals()
-    start, end      : ISO date strings for price-factor calculation
+    df_fundamentals : fundamentals frame (snapshot or point-in-time)
+    start, end      : price window used when ``as_of`` is omitted
     active_factors  : {factor_key: weight}
     top_n           : number of stocks to select
     method          : "zscore" | "rank"
+    as_of           : decision date. Price factors then use the trailing
+                      year ending that day, and bars after it are ignored.
 
     Returns
     -------
@@ -88,7 +96,12 @@ def apply_factor_score(
 
     if needs_price and not df_fundamentals.empty:
         symbols_tuple = tuple(df_fundamentals["symbol"].tolist())
-        df_price = fetch_price_factors(symbols_tuple, start, end)
+        window_start, window_end = (start, end)
+        if as_of:
+            window_start, window_end = price_factor_window(as_of)
+        df_price = fetch_price_factors(
+            symbols_tuple, window_start, window_end, as_of=as_of
+        )
         merged = merged.merge(df_price, on="symbol", how="left")
 
     # Compute composite score

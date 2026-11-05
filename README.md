@@ -9,8 +9,8 @@
 ## 功能特色
 
 - **商品池設定**：支援美股、ETF、指數、台股（`.TW`）、加密貨幣（`BTC-USD` 等）。預設資料來源為 Yahoo Finance，可改接 Tiingo 或 Polygon（見下方）。
-- **基本面濾網**：以 PE、ROE、營收成長率、市值等硬門檻篩選股票池。
-- **多因子評分系統**：ROE / PE / PB / 營收成長 / 盈餘成長 / 動能 / 波動率等因子，可自由開關與調整權重，支援 Z-Score 與百分位排名兩種標準化，選出綜合分數 Top N。
+- **基本面濾網**：歷史回測用決策日（回測起始日）的時點 PE、ROE、營收成長、市值。互動畫面可改看 Yahoo 當下快照，並會標明那不是歷史資料。
+- **多因子評分系統**：ROE / PE / PB / 營收成長 / 盈餘成長 / 動能 / 波動率等因子，可自由開關與調整權重，支援 Z-Score 與百分位排名兩種標準化，選出綜合分數 Top N。時點模式下，動能與波動只算到決策日為止。
 - **五種交易策略**：
   - 買進持有 (Buy & Hold)
   - 均線交叉 (MA Cross，SMA / EMA)
@@ -34,7 +34,7 @@
 | `app.py` | Streamlit 主程式（UI、流程整合、圖表） |
 | `data_fetcher.py` | 依設定的 provider 取得 OHLCV |
 | `providers/` | 價格來源（Yahoo / Tiingo / Polygon）與本機 Parquet 快取 |
-| `fundamentals.py` | 抓取基本面資料（PE、PB、ROE…，目前仍是 Yahoo 當下快照） |
+| `fundamentals/` | 當下快照，以及用財報與決策日價格算出的時點基本面 |
 | `screener.py` | 硬門檻篩選與因子評分整合 |
 | `factor_engine.py` | 因子註冊表、價格因子計算、標準化與綜合評分 |
 | `strategies.py` | 各項技術交易策略的訊號產生邏輯 |
@@ -73,7 +73,30 @@ Polygon 把 `BACKTEST_DATA_PROVIDER` 設成 `polygon`，金鑰變數是 `POLYGON
 - Yahoo 適合示範。調整方式與服務穩定性都不該當成研究級資料。
 - Tiingo 與 Polygon 這一步只接美股／ETF 日線。代碼原樣送出，不會把 `2330.TW` 或 `BTC-USD` 轉成其他市場的格式。台股與加密貨幣的來源以後再加。
 - Polygon 沒有做股息調整，收盤價不會和 Yahoo／Tiingo 的總報酬價格對齊。
-- 基本面仍是 Yahoo `ticker.info` 的當下快照，拿來做歷史篩選有前視問題。這一步沒有改成 point-in-time。
+## 基本面時點
+
+歷史回測的選股預設走時點。決策日是回測起始日，而且目前只在起始日選一次，沒有定期再平衡。PE、PB、ROE、營收成長、盈餘成長、市值只用該日以前看得到的資料。
+
+預設來源是 Yahoo 的季度與年度財報，加上決策日當天、或該日之前最後一個交易日的收盤價（往前最多看 30 個日曆天），由程式自己算比率：
+
+- 有連續四季時用近四季（TTM）。中間缺一季就改用最近的年報，不會把不連續的四季加總。
+- 成長率要有前一段 TTM，或上一財年。前一期的基數要是正的。
+- PE 只用正的稀釋 EPS。PB 與 ROE 只用正的股東權益。
+- 市值是決策日收盤價乘上最近的流通股數；沒有流通股數時用稀釋加權平均股數。
+
+Yahoo 通常沒有申報日，所以假設財報在會計期間結束後 **60 個日曆天**才公開。這個天數是假設，不是交易所規則。用 `BACKTEST_FUNDAMENTALS_LAG_DAYS` 改。若 Yahoo 的法說日對得上該季（期間結束後 120 天內，而且已經有公布 EPS），就用法說日，不再加這 60 天。FMP 有 `acceptedDate` 或 `filingDate` 時用那個日期，同樣不再加固定天數。申報日只取日曆日，不看幾點鐘；盤後公布仍可能被算進當天。
+
+這不是 Compustat 或 TEJ。Yahoo 每一期只給「現在看得到的那一版」。公司若已重編、而且 Yahoo 把舊數字蓋掉了，較早的決策日仍可能吃到重編後的數字。選股邏輯會擋掉 `available_at` 晚於決策日的版本；免費的 Yahoo 路徑拿不到同一期的多個版本。
+
+設了 `FMP_API_KEY` 時，預設（`BACKTEST_FUNDAMENTALS_SOURCE=auto`）改向 Financial Modeling Prep 要損益表與資產負債表。沒有金鑰就走 Yahoo，不會因此壞掉。`BACKTEST_FUNDAMENTALS_SOURCE=yahoo` 可以強制走 Yahoo。明確設成 `fmp` 但沒有金鑰會報錯。FMP 的標準化財報也可能被供應商就地改寫，仍然不是機構級 point-in-time。台股與非美股代碼是原樣送出，FMP 沒有資料時，auto 會再試 Yahoo。
+
+台股若 Yahoo 財報是空的，該列就是空值，篩選會跳過，不會補一個假數字。
+
+價格因子在時點模式下用決策日往前約 12 個月（365 個日曆天）的收盤價。決策日之後的價格不會進動能或波動。
+
+互動介面可以改選「當下快照」。那是 Yahoo `ticker.info` 的今天數值，畫面會標明不能拿來做歷史驗證。
+
+成功取回的財報表寫進 `data_cache/fundamentals/`（Parquet）。跟股價共用 `BACKTEST_DATA_CACHE` 與 `BACKTEST_DATA_CACHE_DIR`。預設最多沿用 1 天，用 `BACKTEST_FUNDAMENTALS_CACHE_TTL_DAYS` 改。
 
 ## 成交與成本
 

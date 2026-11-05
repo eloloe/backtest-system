@@ -66,18 +66,30 @@ FACTOR_REGISTRY: dict[str, dict] = {
 
 # ── Price-based Factor Computation ──────────────────────────
 
-def fetch_price_factors(symbols: tuple, start: str, end: str) -> pd.DataFrame:
+def price_factor_window(as_of: str, lookback_days: int = 365) -> tuple[str, str]:
+    """Trailing window that ends on ``as_of``. The end date is exclusive."""
+    as_of_ts = pd.Timestamp(as_of).normalize()
+    if pd.isna(as_of_ts):
+        raise ValueError(f"invalid as_of: {as_of!r}")
+    start = (as_of_ts - pd.Timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+    end = (as_of_ts + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    return start, end
+
+
+def fetch_price_factors(
+    symbols: tuple, start: str, end: str, as_of: str | None = None
+) -> pd.DataFrame:
     """
-    Compute Momentum (12-month total return) and annualised Volatility
-    for each symbol using historical price data.
+    Compute Momentum and annualised Volatility for each symbol.
 
     Prices come from ``data_fetcher.fetch_data`` so they follow the same
-    provider and adjustment rules as the backtest.
+    provider and adjustment rules as the backtest. Momentum is the close
+    at the end of the window divided by the first close, minus one.
 
-    Parameters
-    ----------
-    symbols : tuple  (hashable so Streamlit cache works)
-    start, end : str  ISO date strings
+    ``end`` is exclusive. When ``as_of`` is set, bars after that date are
+    dropped even if the requested window runs further. A historical screen
+    passes a trailing year that ends on the decision date so later prices
+    in the backtest sample are not part of the score.
 
     Returns
     -------
@@ -86,17 +98,18 @@ def fetch_price_factors(symbols: tuple, start: str, end: str) -> pd.DataFrame:
     # Included in the cache key so a provider switch does not reuse
     # another vendor's momentum and volatility.
     provider = os.environ.get("BACKTEST_DATA_PROVIDER", "yahoo").strip().lower() or "yahoo"
-    return _fetch_price_factors_cached(symbols, start, end, provider)
+    return _fetch_price_factors_cached(symbols, start, end, provider, as_of or "")
 
 
 @st.cache_data(ttl=86400)
 def _fetch_price_factors_cached(
-    symbols: tuple, start: str, end: str, provider: str
+    symbols: tuple, start: str, end: str, provider: str, as_of: str
 ) -> pd.DataFrame:
     rows = []
     for sym in symbols:
         try:
             hist = fetch_data(sym, start, end, provider=provider)
+            hist = _ending_at(hist, as_of)
             if hist.empty or len(hist) < 20:
                 raise ValueError("insufficient data")
 
@@ -115,6 +128,21 @@ def _fetch_price_factors_cached(
     for col in ["Momentum", "Volatility"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
+
+
+def _ending_at(hist: pd.DataFrame, as_of: str) -> pd.DataFrame:
+    """Drop bars after ``as_of``. An empty ``as_of`` leaves the window as requested."""
+    if not as_of or hist.empty:
+        return hist
+    cutoff = pd.Timestamp(as_of).normalize()
+    index = pd.to_datetime(hist.index)
+    if getattr(index, "tz", None) is not None:
+        index = pd.DatetimeIndex(index.strftime("%Y-%m-%d"))
+    else:
+        index = pd.DatetimeIndex(index).normalize()
+    kept = hist.loc[index <= cutoff].copy()
+    kept.index = index[index <= cutoff]
+    return kept
 
 
 # ── Normalisation ────────────────────────────────────────────

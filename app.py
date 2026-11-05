@@ -11,8 +11,9 @@ from plotly.subplots import make_subplots
 from backtester import Backtester
 from data_fetcher import fetch_data
 from metrics import calculate_annual_returns, calculate_metrics, calculate_monthly_returns
-from fundamentals import fetch_fundamentals
+from fundamentals import fetch_fundamentals, fetch_pit_fundamentals
 from factor_engine import FACTOR_REGISTRY
+from providers import ProviderError
 from screener import apply_factor_score, filter_stocks
 from strategies import (
     BollingerBandsStrategy,
@@ -136,6 +137,18 @@ with st.sidebar:
     )
 
     st.markdown("### 🎯 基本面濾網 (Fundamentals)")
+    fundamentals_mode = st.radio(
+        "基本面時點",
+        ["時點（回測起始日）", "當下快照（非歷史）"],
+        index=0,
+        help=(
+            "時點：只用回測起始日以前已公開的財報，以及該日以前的價格。"
+            "沒有申報日或法說日時，財報在會計期間結束後 60 天才納入"
+            "（環境變數 BACKTEST_FUNDAMENTALS_LAG_DAYS 可改）。"
+            "當下快照是 Yahoo 今天的數值，只適合瀏覽，不能當成當時的選股依據。"
+        ),
+    )
+    use_pit = fundamentals_mode == "時點（回測起始日）"
     use_screener = st.checkbox("啟用基本面篩選", value=True)
     if use_screener:
         pe_max = st.number_input("PE (本益比) <", value=50.0)
@@ -299,29 +312,55 @@ if not run_btn:
 # 執行與回測邏輯
 # ──────────────────────────────────────────────
 filtered_symbols = universe_list
+needs_fundamentals = use_screener or (use_factor_scoring and bool(active_factors))
+df_fun = pd.DataFrame(columns=["symbol"])
 
-# Step 1: Hard-threshold fundamental filter
+# Step 1: Hard-threshold fundamental filter.
+# The historical path uses point-in-time statements as of the backtest start.
+if needs_fundamentals:
+    try:
+        if use_pit:
+            with st.spinner("正在取得時點基本面..."):
+                df_fun = fetch_pit_fundamentals(universe_list, as_of=str(start_date))
+            lag = 60
+            if not df_fun.empty and "lag_days" in df_fun.columns and pd.notna(df_fun["lag_days"].iloc[0]):
+                lag = int(df_fun["lag_days"].iloc[0])
+            st.caption(
+                f"基本面是時點值，決策日為回測起始日 {start_date:%Y-%m-%d}。"
+                f"財報在會計期間結束 {lag} 天後才納入；若有法說日或申報日則用該日。"
+                "動能與波動只用決策日以前約 12 個月的價格。"
+                "這不是 Compustat 或 TEJ 的 point-in-time 資料庫。"
+            )
+        else:
+            with st.spinner("正在取得當下基本面快照..."):
+                df_fun = fetch_fundamentals(universe_list)
+            st.warning(
+                "目前用的是 Yahoo 當下快照（今天的 PE、ROE 等），不是回測起始日當時看得到的數字。"
+                "價格因子也涵蓋整段回測區間。拿這組結果當成歷史驗證會有前視。"
+            )
+    except ProviderError as exc:
+        st.error(str(exc))
+        st.stop()
+
 if use_screener:
-    with st.spinner("正在取得基本面資料並篩選..."):
-        df_fun = fetch_fundamentals(universe_list)
-        mcap_real = mcap_min_b * 1_000_000_000 if mcap_min_b else None
-        pe_val = pe_max if pe_max > 0 else None
+    mcap_real = mcap_min_b * 1_000_000_000 if mcap_min_b else None
+    pe_val = pe_max if pe_max > 0 else None
 
-        filtered_df = filter_stocks(
-            df_fun,
-            pe_max=pe_val,
-            roe_min=roe_min if roe_min > -10 else None,
-            rev_growth_min=rev_growth_min if rev_growth_min > -10 else None,
-            mcap_min=mcap_real,
-        )
-        filtered_symbols = filtered_df["symbol"].tolist()
+    filtered_df = filter_stocks(
+        df_fun,
+        pe_max=pe_val,
+        roe_min=roe_min if roe_min > -10 else None,
+        rev_growth_min=rev_growth_min if rev_growth_min > -10 else None,
+        mcap_min=mcap_real,
+    )
+    filtered_symbols = filtered_df["symbol"].tolist()
 
-        st.markdown("### 📊 基本面篩選結果")
-        st.dataframe(filtered_df, use_container_width=True)
-else:
-    df_fun = fetch_fundamentals(universe_list)  # needed by factor scoring even if threshold filter is off
+    st.markdown("### 📊 基本面篩選結果")
+    st.dataframe(filtered_df, use_container_width=True)
 
 if not filtered_symbols:
+    if use_screener and use_pit:
+        st.caption("時點財報是空的標的會被略過（部分台股 Yahoo 沒有財報）。可以放寬條件，或改看當下快照。")
     st.error("沒有股票通過基本面篩選！請放寬條件。")
     st.stop()
 
@@ -339,6 +378,7 @@ if use_factor_scoring and active_factors:
             active_factors=active_factors,
             top_n=int(factor_top_n),
             method=norm_method_key,
+            as_of=str(start_date) if use_pit else None,
         )
         filtered_symbols = ranked_df["symbol"].tolist()
 

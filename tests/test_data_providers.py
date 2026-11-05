@@ -394,6 +394,31 @@ def test_price_factors_use_the_fetcher(monkeypatch):
     assert np.isfinite(result.loc[0, "Volatility"])
 
 
+def test_price_factors_ignore_bars_after_as_of(monkeypatch):
+    from factor_engine import _fetch_price_factors_cached, fetch_price_factors
+
+    _fetch_price_factors_cached.clear()
+    index = pd.bdate_range("2020-01-01", periods=40)
+    close = pd.Series(100.0, index=index)
+    close.iloc[29] = 110.0
+    close.iloc[30:] = 50.0
+    frame = pd.DataFrame(
+        {"Open": close, "High": close, "Low": close, "Close": close, "Volume": 1.0}
+    )
+
+    monkeypatch.setattr(
+        "factor_engine.fetch_data",
+        lambda symbol, start, end, provider=None: frame,
+    )
+    as_of = index[29].strftime("%Y-%m-%d")
+    clipped = fetch_price_factors(("AAA",), "2020-01-01", "2021-01-01", as_of=as_of)
+    assert clipped.loc[0, "Momentum"] == pytest.approx(0.10)
+
+    _fetch_price_factors_cached.clear()
+    full = fetch_price_factors(("AAA",), "2020-01-01", "2021-01-01")
+    assert full.loc[0, "Momentum"] == pytest.approx(-0.50)
+
+
 def test_price_factors_propagate_config_errors_and_fill_gaps(monkeypatch):
     from factor_engine import _fetch_price_factors_cached, fetch_price_factors
 
