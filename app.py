@@ -189,10 +189,31 @@ with st.sidebar:
         "初始資金 (USD)", value=100_000, min_value=1_000, step=10_000
     )
     commission = (
-        st.slider("手續費 (%)", min_value=0.0, max_value=1.0, value=0.1, step=0.01) / 100
+        st.slider(
+            "手續費 (%)",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.1,
+            step=0.01,
+            help="只用於美股與其他非台股代碼，買賣都依成交金額收取。台股（.TW / .TWO）改用券商手續費與賣出證交稅。",
+        )
+        / 100
     )
     slippage = (
-        st.slider("滑價 (%)", min_value=0.0, max_value=0.5, value=0.05, step=0.01) / 100
+        st.slider(
+            "滑價 (%)",
+            min_value=0.0,
+            max_value=0.5,
+            value=0.05,
+            step=0.01,
+            help="下一根開盤價往不利方向偏移，買入與賣出都適用。",
+        )
+        / 100
+    )
+    st.caption(
+        "訊號在當根收盤決定，成交在下一根開盤，不會用同一根收盤價成交。"
+        "台股預設券商手續費 0.1425%（最低 20 元）；賣出證交稅為股票 0.3%，"
+        "代碼以 00 開頭的 ETF 為 0.1%。"
     )
     risk_free_rate = (
         st.slider("無風險利率 (%)", min_value=0.0, max_value=10.0, value=4.0, step=0.1) / 100
@@ -399,7 +420,7 @@ with st.spinner("下載歷史報價並執行策略回測…"):
             commission=commission,
             slippage=slippage,
         )
-        portfolio, trades = bt.run(data, signals)
+        portfolio, trades = bt.run(data, signals, symbol=sym)
         
         all_equity_curves.append(portfolio["portfolio_value"])
         if not trades.empty:
@@ -830,14 +851,22 @@ with tab4:
         td["price"] = td["price"].map("${:.2f}".format)
         td["shares"] = td["shares"].map("{:.4f}".format)
         td["value"] = td["value"].map("${:,.2f}".format)
-        
-        # Determine column order: Add 'symbol' if it exists
+        show_fee = "fee" in td.columns
+        if show_fee:
+            td["fee"] = td["fee"].map("${:,.2f}".format)
+
+        columns = ["date"]
+        headers = ["日期"]
         if "symbol" in td.columns:
-            td = td[["date", "symbol", "action", "price", "shares", "value"]]
-            td.columns = ["日期", "標的", "動作", "成交價", "股數", "金額"]
-        else:
-            td = td[["date", "action", "price", "shares", "value"]]
-            td.columns = ["日期", "動作", "成交價", "股數", "金額"]
+            columns.append("symbol")
+            headers.append("標的")
+        columns.extend(["action", "price", "shares", "value"])
+        headers.extend(["動作", "成交價", "股數", "金額"])
+        if show_fee:
+            columns.append("fee")
+            headers.append("費用")
+        td = td[columns]
+        td.columns = headers
 
         def highlight_action(row):
             color = "#1A3A1A" if row["動作"] == "BUY" else "#3A1A1A"
