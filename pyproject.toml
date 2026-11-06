@@ -23,9 +23,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=7.4.0"]
 shioaji = ["shioaji>=1.7,<1.8"]
-# Not imported by the default engine. The Nautilus hook only checks whether
-# this distribution is installed, then refuses until an adapter is written.
-nautilus = ["nautilus_trader>=1.200"]
+# Optional second engine. Imported only by load_crosscheck("nautilus").
+# Developed against nautilus_trader 1.221.
+nautilus = ["nautilus_trader>=1.220"]
 
 [project.scripts]
 backtest = "backtest_system.cli:main"

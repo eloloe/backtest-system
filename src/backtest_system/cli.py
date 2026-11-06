@@ -10,9 +10,19 @@ names a provider; it does not carry the key.
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 
-from backtest_system.research.runner import ConfigError, ResearchError, format_metrics, load_run_config, run_research, write_report
+from backtest_system.engine.crosscheck import OptionalEngineError
+from backtest_system.research.runner import (
+    ConfigError,
+    ResearchError,
+    attach_crosscheck,
+    format_metrics,
+    load_run_config,
+    run_research,
+    write_report,
+)
 from backtest_system.research.walk_forward import WalkForwardError
 
 
@@ -32,6 +42,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--walk-forward", action="store_true", help="改跑滾動測試窗")
     parser.add_argument("--no-walk-forward", action="store_true", help="即使 YAML 開了也改跑整段")
     parser.add_argument("--open-holdout", action="store_true", help="另外評鎖定的 holdout，不拿它選參")
+    parser.add_argument(
+        "--cross-check",
+        choices=["reference", "nautilus"],
+        help="跑完後用第二套帳本對總損益、淨值、成交筆數和成交價",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -40,6 +55,18 @@ def main(argv: list[str] | None = None) -> int:
     except (ConfigError, ResearchError, WalkForwardError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
+
+    report = None
+    cross_error = None
+    if config.cross_check:
+        try:
+            report = attach_crosscheck(result)
+        except OptionalEngineError as exc:
+            cross_error = str(exc)
+            result.notes.append(str(exc))
+        except (ResearchError, ValueError, RuntimeError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
 
     written = write_report(result, config.output_dir)
     print(format_metrics(result.metrics_display))
@@ -60,6 +87,16 @@ def main(argv: list[str] | None = None) -> int:
     print(f"對照      {written['baselines_csv']}")
     if "trials_csv" in written:
         print(f"試驗      {written['trials_csv']}")
+    if "crosscheck_json" in written:
+        print(f"對帳檔    {written['crosscheck_json']}")
+    if report is not None:
+        state = "吻合" if report.ok else "分叉"
+        print(f"對帳      {config.cross_check} {state}  最大淨值差 {_gap(report.max_abs_diff)}")
+    if cross_error:
+        print(cross_error, file=sys.stderr)
+        return 1
+    if report is not None and not report.ok:
+        return 2
     return 0
 
 
@@ -86,7 +123,19 @@ def _overrides(args: argparse.Namespace) -> dict:
         picked["walk_forward"] = False
     if args.open_holdout:
         picked["open_holdout"] = True
+    if args.cross_check:
+        picked["cross_check"] = args.cross_check
     return picked
+
+
+def _gap(value) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "inf"
+    if not math.isfinite(number):
+        return "inf"
+    return f"{number:.6g}"
 
 
 if __name__ == "__main__":
