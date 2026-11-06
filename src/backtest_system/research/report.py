@@ -105,6 +105,7 @@ def write_report(result, output_dir) -> dict[str, Path]:
         "metrics_raw": _jsonable(result.metrics),
         "comparison": _jsonable(getattr(result, "comparison", {}) or {}),
         "selection": _jsonable(getattr(result, "selection", None)),
+        "crosscheck": _jsonable(getattr(result, "crosscheck", None)),
         "notes": result.notes,
     }
     walk = result.walk_forward
@@ -126,6 +127,18 @@ def write_report(result, output_dir) -> dict[str, Path]:
     baselines = baseline_frame(result)
     baselines.to_csv(directory / "baselines.csv", index=False)
     written["baselines_csv"] = directory / "baselines.csv"
+    crosscheck = getattr(result, "crosscheck", None)
+    if crosscheck:
+        path = directory / "crosscheck.json"
+        path.write_text(
+            json.dumps(_jsonable(crosscheck), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        written["crosscheck_json"] = path
+    curve = getattr(result, "crosscheck_equity", None)
+    if curve is not None and len(curve):
+        curve.rename("equity").to_csv(directory / "crosscheck_equity.csv")
+        written["crosscheck_equity_csv"] = directory / "crosscheck_equity.csv"
     if result.trades is not None and not result.trades.empty:
         result.trades.to_csv(directory / "trades.csv", index=False)
         written["trades_csv"] = directory / "trades.csv"

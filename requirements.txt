@@ -1,5 +1,5 @@
 # Prefer a checkout install: pip install -e ".[dev]"
-# nautilus_trader is not a dependency. See README for the optional extra.
+# nautilus_trader is optional: pip install -e ".[nautilus]"
 streamlit>=1.28.0
 yfinance>=0.2.31
 pandas>=2.0.0

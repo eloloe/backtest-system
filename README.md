@@ -43,7 +43,14 @@ streamlit run app.py
 
 `pip install -e .` 會裝上套件，並多一個 `backtest` 命令，跟 `python cli.py` 是同一條程式。沒有做可編輯安裝時，根目錄的腳本會自己把 `src/` 加進匯入路徑，`streamlit run app.py` 與 `python cli.py` 仍可從專案根目錄跑。
 
-`nautilus_trader` 不在預設依賴，也不在 `requirements.txt`。`pip install -e ".[nautilus]"` 只是預留；比較介面在問到 Nautilus 時會說明尚未接上，預設用成交明細把淨值重算一次。
+`nautilus_trader` 不在預設依賴，也不在 `requirements.txt`。要拿它對帳才裝：
+
+```bash
+pip install -e ".[nautilus]"
+python cli.py --config examples/trend_stop.yaml --cross-check nautilus
+```
+
+沒裝時主回測照跑。`--cross-check reference` 不需要 Nautilus，只把成交明細重算一次淨值。細節見下方「第二引擎對帳」。
 
 ## 專案結構
 
@@ -182,9 +189,36 @@ streamlit run app.py
 
 兩筆成交之間股數與現金不變，所以這段淨值是收盤價的一段乘法，不是逐日的 Python 迴圈。成本公式沒有改。`Backtester.run_reference` 仍是逐根 K 線的定義，測試用合成 OHLCV 對這兩條路徑。
 
-要用別的引擎對帳，呼叫 `load_crosscheck("reference")`，用成交明細與收盤價把淨值重算一次。`load_crosscheck("nautilus")` 是留給 Nautilus 的入口，現在沒有接上，也不會因為沒裝那個套件而讓預設回測失敗。
+要用別的引擎對帳，見下方「第二引擎對帳」。`load_crosscheck("reference")` 不另跑訊號，只用成交明細把淨值重算一次。
 
-跑單元測試（不需要金鑰，也不必安裝 `shioaji` 或 `nautilus_trader`）：
+跑單元測試（不需要金鑰，也不必安裝 `shioaji`）。沒裝 `nautilus_trader` 時，Nautilus 那幾條對帳測試會跳過，其餘測試照跑：
+
+### 第二引擎對帳
+
+研究迴圈可以在主回測寫完淨值和回撤之後，把**同一份成交**再送進第二套帳本。它不重新產生訊號。
+
+```bash
+pip install -e ".[nautilus]"
+python cli.py --config examples/trend_stop.yaml --cross-check nautilus
+```
+
+設定檔裡寫 `cross_check: nautilus` 或 `cross_check: reference` 也行，命令列蓋過檔案。對得上時程式結束碼是 0。淨值對不上、筆數不同、或成交價差超過網格，結束碼是 2。沒裝 Nautilus 卻指定它，結束碼是 1，淨值和回撤仍會寫出。
+
+輸出維持原來的淨值圖和回撤圖。淨值圖上多一條第二引擎的線（Nautilus 或「成交重播」）。回撤圖仍是主帳本。另外寫 `crosscheck.json` 和 `crosscheck_equity.csv`，裡面有總損益、淨值最大差、報酬差、成交筆數、成交價差。
+
+Nautilus 這條帳是這樣接的（在 `nautilus_trader` 1.221 上對過）：
+
+- 市價單在 `on_bar` 裡送出時，吃的是這根 K 線走完之後的盤口。若把高低收都送進去，成交價會離開開盤。對帳時每根 K 線都收成**開盤價一價**，所以成交打在開盤，不沿著高、低走。
+- 部位用主引擎的收盤價盯市。Nautilus 那根扁 K 線的最後價是開盤，拿它盯市會讓兩條淨值永遠差一截。
+- 滑價留在主引擎。Nautilus 不另滑。滑價不是 0 時，成交價差就是預期中的分叉。
+- 現金是 Nautilus 的美元帳戶，記到分。手續費用主引擎的費率：美股比例加固定費用，或台股手續費、下限和賣出證交稅。兩邊都不發股息，`dividend_withholding` 仍然不動淨值。
+- 名稱做成現金 CFD，股數可以是小數。Nautilus 的股票工具不接受碎股。CFD 的乘數固定是 1，所以 `contract_multiplier` 折進下單數量。
+- 送進去的成交量會抬到盤口吃得下這張單。歷史量能和排隊不是這次對帳的對象。現金帳戶不能放空。同一根裡先賣後買才有現金，訊息佇列是關的。
+- 訊號策略（含買進持有、均線、趨勢停損）一檔一個等額帳戶，請求了但沒有報價的名稱不計入淨值，跟主引擎一樣。橫截面和核心衛星共用一個現金帳戶。
+- Walk-forward 的樣本外淨值若沒有把逐筆成交留下來，空的成交表對不上那條淨值，對帳會判分叉。這是資料不在，不是 Nautilus 另算了一套損益。
+- 預設容忍是：每一筆成交一分錢，再加上曝險乘上 `1e-4` 的價格網格。成交價差超過 `1e-4`、股數差超過 `1e-6`、或費用差超過一分，都算實質成交差，淨值就算還在帶內也判分叉。
+
+`pytest` 在裝了 `.[nautilus]` 時會跑一條對得上的確定性案例，和一條故意滑價、把淨值挪走的分叉案例。
 
 ```bash
 pip install -e ".[dev]"

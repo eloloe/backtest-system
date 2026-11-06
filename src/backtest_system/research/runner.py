@@ -77,6 +77,7 @@ _TOP_LEVEL = {
     "cross_section",
     "core_satellite",
     "screen",
+    "cross_check",
 }
 
 
@@ -121,6 +122,7 @@ class RunConfig:
     active_factors: dict = field(default_factory=dict)
     factor_top_n: int | None = None
     norm_method: str = "zscore"
+    cross_check: str | None = None
 
 
 @dataclass
@@ -146,6 +148,9 @@ class ResearchResult:
     rolling_sharpe_figure: go.Figure | None = None
     comparison: dict = field(default_factory=dict)
     selection: dict | None = None
+    prices: dict | None = None
+    crosscheck: dict | None = None
+    crosscheck_equity: pd.Series | None = None
 
 
 def load_run_config(path, overrides: Mapping | None = None) -> RunConfig:
@@ -233,6 +238,7 @@ def load_run_config(path, overrides: Mapping | None = None) -> RunConfig:
         active_factors={str(name): float(weight) for name, weight in factors.items()},
         factor_top_n=None if screen.get("top_n") is None else int(screen.get("top_n")),
         norm_method=str(screen.get("method") or "zscore"),
+        cross_check=_cross_check_name(data.get("cross_check")),
     )
 
 
@@ -332,7 +338,9 @@ def run_research(
         chart_prices=_chart_prices(prepared, symbols, start, end),
         walk_forward=None,
     )
-    return _overlay(packed, prepared, benchmark_close, strategy=strategy)
+    result = _overlay(packed, prepared, benchmark_close, strategy=strategy)
+    result.prices = prepared
+    return result
 
 
 def strategy_params(config: RunConfig) -> dict:
@@ -348,6 +356,98 @@ def strategy_params(config: RunConfig) -> dict:
 def write_report(result: ResearchResult, output_dir) -> dict[str, Path]:
     """Write the shared pack: equity, drawdown, rolling Sharpe, metrics, baselines."""
     return _write_report(result, output_dir)
+
+
+def attach_crosscheck(result: ResearchResult):
+    """Run the configured second book and draw it on the equity chart.
+
+    Signal strategies are equal-weight sleeves. A cross-section or a
+    core-satellite book is one shared cash account. The drawdown chart
+    stays the primary book; the second equity is a line on the equity chart.
+    """
+    from backtest_system.engine.costs import resolve_costs
+    from backtest_system.engine.crosscheck import run_crosscheck
+
+    name = result.config.cross_check
+    if not name:
+        raise ConfigError("cross_check is empty")
+    if not result.prices:
+        raise ResearchError("這次回測沒有留下價格，第二引擎沒有 K 線可以吃。")
+    names = list(result.symbols)
+    trades = result.trades if result.trades is not None else pd.DataFrame()
+    if "symbol" in getattr(trades, "columns", []):
+        for symbol in trades["symbol"].dropna().astype(str).unique():
+            if symbol not in names and symbol in result.prices:
+                names.append(symbol)
+    bars = {}
+    for symbol in names:
+        frame = result.prices.get(symbol)
+        if frame is None or "Open" not in frame.columns or "Close" not in frame.columns:
+            continue
+        bars[symbol] = frame
+    if not bars:
+        raise ResearchError("價格裡沒有 Open 和 Close，沒辦法用第二引擎對帳。")
+    key = canonical_strategy(result.config.strategy)
+    mode = "pooled" if key in {"cross_section", "core_satellite"} else "sleeves"
+    costs = {
+        symbol: resolve_costs(
+            symbol=symbol,
+            market=result.config.market,
+            commission=result.config.commission,
+            slippage=result.config.slippage,
+        )
+        for symbol in bars
+    }
+    closes = pd.DataFrame({symbol: frame["Close"] for symbol, frame in bars.items()})
+    run = run_crosscheck(
+        name,
+        trades,
+        closes,
+        result.config.initial_capital,
+        result.equity,
+        bars=bars,
+        costs=costs,
+        mode=mode,
+        symbols=list(result.symbols),
+    )
+    label = "Nautilus" if name == "nautilus" else "成交重播"
+    result.equity_figure.add_trace(
+        go.Scatter(
+            x=run.equity.index,
+            y=run.equity,
+            name=label,
+            line=dict(color="#79C0FF", width=2, dash="dash"),
+        )
+    )
+    state = "吻合" if run.report.ok else "分叉"
+    display = dict(result.metrics_display)
+    display["第二引擎"] = f"{label} {state}"
+    result.metrics_display = display
+    if name == "nautilus":
+        account = "共用一個現金帳戶" if mode == "pooled" else "各檔一個等額帳戶"
+        result.notes.append(
+            f"Nautilus 用該根開盤成交、現金記到分，{account}。"
+            "滑價、高低價路徑和歷史成交量不在這條帳上。"
+        )
+    else:
+        result.notes.append("對帳用成交明細把淨值重算了一次，沒有另跑一組訊號。")
+    result.crosscheck = {
+        "engine": name,
+        "mode": mode,
+        "ok": run.report.ok,
+        "max_abs_diff": run.report.max_abs_diff,
+        "compared_bars": run.report.compared_bars,
+        "total_pnl": run.report.total_pnl,
+        "other_pnl": run.report.other_pnl,
+        "trade_count": run.report.trade_count,
+        "other_trade_count": run.report.other_trade_count,
+        "max_fill_price_diff": run.report.max_fill_price_diff,
+        "material_fills": run.report.material_fills,
+        "max_abs_return_diff": run.report.max_abs_return_diff,
+        "notes": list(run.report.notes),
+    }
+    result.crosscheck_equity = run.equity
+    return run.report
 
 
 def format_metrics(display: Mapping[str, str]) -> str:
@@ -438,7 +538,9 @@ def _run_walk(config, key, prices, symbols, bench_returns, benchmark_close, fund
     packed.metrics_display = wf.metrics_display
     packed.metrics = wf.metrics
     packed.selection = wf.selection
-    return _overlay(packed, prices, benchmark_close, strategy=None)
+    result = _overlay(packed, prices, benchmark_close, strategy=None)
+    result.prices = prices
+    return result
 
 
 def _pack(
@@ -784,6 +886,17 @@ def _mapping(value, name: str) -> dict:
     if not isinstance(value, Mapping):
         raise ConfigError(f"{name} must be a mapping")
     return dict(value)
+
+
+def _cross_check_name(value) -> str | None:
+    if value is None or str(value).strip() == "":
+        return None
+    key = str(value).strip().lower()
+    if key in {"reference", "replay"}:
+        return "reference"
+    if key in {"nautilus", "nautilus_trader"}:
+        return "nautilus"
+    raise ConfigError("cross_check must be reference or nautilus")
 
 
 def _as_bool(value, name: str) -> bool:
