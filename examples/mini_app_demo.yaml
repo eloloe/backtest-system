@@ -1,0 +1,10 @@
+strategy: buy_and_hold
+tickers:
+  - DEMO
+start: "2022-01-03"
+end: "2022-12-31"
+benchmark: SPY
+initial_capital: 100000
+commission: 0.001
+slippage: 0.0005
+output_dir: output/mini_app_demo

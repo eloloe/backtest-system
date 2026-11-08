@@ -1,0 +1,23 @@
+{
+  "meta": {
+    "label": "offline-demo",
+    "source": "synthetic fixture",
+    "note": "示範格式，不含任何私有市場資料。"
+  },
+  "snapshots": [
+    {
+      "symbol": "2330.TW",
+      "timestamp": "2026-10-01T09:00:00+08:00",
+      "bid": 1000.0,
+      "ask": 1000.5,
+      "lot_size": 1000
+    },
+    {
+      "symbol": "0050.TW",
+      "timestamp": "2026-10-01T09:00:01+08:00",
+      "bid": 160.0,
+      "ask": 160.1,
+      "lot_size": 1000
+    }
+  ]
+}

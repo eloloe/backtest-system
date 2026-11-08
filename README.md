@@ -52,6 +52,33 @@ python cli.py --config examples/trend_stop.yaml --cross-check nautilus
 
 沒裝時主回測照跑。`--cross-check reference` 不需要 Nautilus，只把成交明細重算一次淨值。細節見下方「第二引擎對帳」。
 
+### 作品集互動診斷小 app（靜態）
+
+除了原本的報表，CLI 也能直接輸出一個可嵌入網站的互動小 app（`index.html + app.js + data.json`）。它主打「回測結果解讀與證據」，不是交易前台，也不含登入或下單。
+
+```bash
+backtest-mini-app --config examples/mini_app_demo.yaml --demo-synthetic \
+  --output output/mini_app_demo_bundle \
+  --data-label 合成樣本 --validation-label 樣本內 \
+  --shioaji-fixture examples/shioaji_quote_fixture.json
+```
+
+或在同一次回測後一起輸出：
+
+```bash
+python cli.py --config examples/trend_stop.yaml \
+  --mini-app-dir output/mini_app_bundle \
+  --mini-app-data-label 歷史回測 \
+  --mini-app-validation walk-forward樣本外
+```
+
+功能邊界：
+
+- 成本/滑價控制是**固定成交重播**（同一份 trades + Open/Close），不是重新選股或再優化。
+- 要驗證「改參數後策略是否還成立」，請完整重跑引擎，再輸出新 bundle。
+- Shioaji 區塊只讀 quote fixture 做假設比對，不收憑證、不連帳號、不下單。
+- 雲端環境通常無法驗證你的 Shioaji 帳號連線，`live_connectivity_verified=false` 會明確標示這件事。
+
 ## 專案結構
 
 實作在 `src/backtest_system/`。根目錄留下同名的薄包裝，所以舊的 `from backtester import Backtester`、`python cli.py`、`streamlit run app.py` 還能用。研究核心不 import Streamlit。今天的 Yahoo 快照快取留在根目錄的 `fundamentals.py`，給畫面上那個前視選項。
