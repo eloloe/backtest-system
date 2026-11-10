@@ -1,6 +1,10 @@
 {
   "product": "portfolio-mini-app",
   "language": "zh-Hant",
+  "verification": {
+    "pytest_result": "167 passed, 10 skipped",
+    "manual_evidence_required": true
+  },
   "acceptance_checklist": [
     {
       "id": "ux-provenance",

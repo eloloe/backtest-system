@@ -55,11 +55,11 @@
   - Shioaji fixture round-trip
   - 靜態 bundle 產物驗證
   - 成本控制改變曲線
-- 全專案測試：`161 passed, 10 skipped`
+- 全專案測試：`167 passed, 10 skipped`
 - 互動手測證據：
-  - 桌機互動錄影（修改成本、重播、切 finding）
-  - 手機窄版互動錄影
-  - 桌機/手機截圖
+  - 桌機互動錄影（含 Network `data.json=200`、Console 檢查、修改成本/滑價、切換 finding）
+  - 手機窄版互動錄影（修改參數重播 + finding）
+  - 桌機/手機截圖（由上述錄影擷取）
 
 ## 6) 取捨與限制（誠實揭露）
 

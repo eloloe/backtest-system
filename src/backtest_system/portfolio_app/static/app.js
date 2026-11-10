@@ -79,7 +79,8 @@ function renderFindings(data) {
     btn.textContent = `${f.status.toUpperCase()}｜${f.title}`;
     btn.onclick = () => {
       detail.textContent =
-        `${f.question}\n\n` +
+        `標題：${f.title}\n` +
+        `問題：${f.question}\n\n` +
         `等級：${f.severity}\n` +
         `判定：${f.status}\n\n` +
         `為什麼重要：\n${f.why}\n\n` +
