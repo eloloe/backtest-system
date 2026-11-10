@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>回測診斷小 app</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  </head>
+  <body>
+    <main class="wrap">
+      <header class="card hero">
+        <p class="tag">樣本 / 歷史 / 即時 標示清楚</p>
+        <h1 id="title">回測診斷小 app</h1>
+        <p id="subtitle" class="muted"></p>
+      </header>
+
+      <section class="card">
+        <h2>這次結果從哪裡來</h2>
+        <div id="provenance" class="grid"></div>
+      </section>
+
+      <section class="card">
+        <h2>互動檢查：固定成交重播（不是再優化）</h2>
+        <p class="muted">調整成本只會重播同一份成交；若要改訊號、改選股、改參數，請跑完整引擎。</p>
+        <div class="controls">
+          <label>起日 <input id="startDate" type="date" /></label>
+          <label>訖日 <input id="endDate" type="date" /></label>
+          <label>手續費率(%) <input id="commissionPct" type="number" step="0.0001" min="0" /></label>
+          <label>滑價率(%) <input id="slippagePct" type="number" step="0.0001" min="0" /></label>
+          <button id="replayBtn">重播並更新圖表</button>
+        </div>
+        <div class="kpis" id="previewKpis"></div>
+        <p id="previewIssue" class="muted"></p>
+      </section>
+
+      <section class="card">
+        <h2>淨值與回撤</h2>
+        <div id="equityChart" class="chart"></div>
+        <div id="drawdownChart" class="chart"></div>
+      </section>
+
+      <section class="card">
+        <h2>這些問題有沒有過關？</h2>
+        <p id="findingScope" class="muted"></p>
+        <div id="findingList" class="finding-list"></div>
+        <article id="findingDetail" class="detail"></article>
+      </section>
+
+      <section class="card">
+        <h2>Shioaji 執行假設比對（離線 fixture）</h2>
+        <div id="shioajiPanel"></div>
+      </section>
+    </main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

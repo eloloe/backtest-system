@@ -1,0 +1,70 @@
+{
+  "product": "portfolio-mini-app",
+  "language": "zh-Hant",
+  "verification": {
+    "pytest_result": "167 passed, 10 skipped",
+    "manual_evidence_required": true
+  },
+  "acceptance_checklist": [
+    {
+      "id": "ux-provenance",
+      "must": "顯示資產、日期區間、基準、資料來源、試驗數、驗證狀態與 sample/historical/live 標籤",
+      "status": "done"
+    },
+    {
+      "id": "ux-equity-drawdown",
+      "must": "每次完成回測都能看淨值 + 回撤，且可含基準對照",
+      "status": "done"
+    },
+    {
+      "id": "ux-controls-recompute",
+      "must": "成本/滑價/區間改變後，必須重播實際輸入，不可線性縮放指標",
+      "status": "done"
+    },
+    {
+      "id": "ux-finding-evidence",
+      "must": "finding 點擊後顯示證據、嚴重度、影響與下一步",
+      "status": "done"
+    },
+    {
+      "id": "ux-status-separation",
+      "must": "區分 pass/fail/insufficient/not_applicable",
+      "status": "done"
+    },
+    {
+      "id": "diag-benchmark",
+      "must": "策略與基準相對報酬檢查",
+      "status": "done"
+    },
+    {
+      "id": "diag-concentration",
+      "must": "交易集中度檢查",
+      "status": "done"
+    },
+    {
+      "id": "diag-cost-stress",
+      "must": "成本壓力測試（固定成交重播）",
+      "status": "done"
+    },
+    {
+      "id": "diag-time-separation",
+      "must": "時間切分與限制說明",
+      "status": "done"
+    },
+    {
+      "id": "diag-shioaji-safe-boundary",
+      "must": "Shioaji 僅讀 fixture，無登入/下單，未驗證連線需明示",
+      "status": "done"
+    },
+    {
+      "id": "diag-shioaji-readonly-capture",
+      "must": "提供本機帳號可用的只讀收集器（quote subscribe/callback/cleanup），供 fixture 匯入",
+      "status": "done"
+    },
+    {
+      "id": "delivery-static-bundle",
+      "must": "輸出可嵌入網站的靜態包",
+      "status": "done"
+    }
+  ]
+}

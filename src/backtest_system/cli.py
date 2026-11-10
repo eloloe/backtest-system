@@ -14,6 +14,7 @@ import math
 import sys
 
 from backtest_system.engine.crosscheck import OptionalEngineError
+from backtest_system.portfolio_app.bundle import build_portfolio_bundle
 from backtest_system.research.runner import (
     ConfigError,
     ResearchError,
@@ -47,6 +48,12 @@ def main(argv: list[str] | None = None) -> int:
         choices=["reference", "nautilus"],
         help="跑完後用第二套帳本對總損益、淨值、成交筆數和成交價",
     )
+    parser.add_argument("--mini-app-dir", help="另外輸出可嵌入網站的互動診斷小 app 靜態包")
+    parser.add_argument("--mini-app-data-label", default="歷史回測", help="小 app 的資料標籤")
+    parser.add_argument("--mini-app-validation", default="樣本內", help="小 app 的驗證標籤")
+    parser.add_argument("--mini-app-title", default="Leo｜回測診斷與假設檢查")
+    parser.add_argument("--mini-app-subtitle", default="證據導向：先看數字，再下結論")
+    parser.add_argument("--shioaji-fixture", help="小 app 可帶入離線 quote fixture JSON（只讀）")
     args = parser.parse_args(argv)
 
     try:
@@ -89,6 +96,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"試驗      {written['trials_csv']}")
     if "crosscheck_json" in written:
         print(f"對帳檔    {written['crosscheck_json']}")
+    if args.mini_app_dir:
+        mini = build_portfolio_bundle(
+            result,
+            output_dir=args.mini_app_dir,
+            title=args.mini_app_title,
+            subtitle=args.mini_app_subtitle,
+            data_label=args.mini_app_data_label,
+            validation_label=args.mini_app_validation,
+            shioaji_fixture=args.shioaji_fixture,
+        )
+        print(f"小 app    {mini['index_html']}")
+        print(f"證據包    {mini['data_json']}")
     if report is not None:
         state = "吻合" if report.ok else "分叉"
         print(f"對帳      {config.cross_check} {state}  最大淨值差 {_gap(report.max_abs_diff)}")
