@@ -28,7 +28,7 @@ def build_portfolio_bundle(
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     static_dir = Path(__file__).with_name("static")
-    for name in ("index.html", "styles.css", "app.js"):
+    for name in ("index.html", "styles.css", "app.js", "replay_runtime.js"):
         shutil.copy2(static_dir / name, out / name)
 
     diagnostics = diagnose_result(result)
@@ -43,6 +43,7 @@ def build_portfolio_bundle(
             "subtitle": subtitle,
             "initial_capital": float(result.config.initial_capital),
             "base_commission_rate": float(result.config.commission),
+            "commission_flat": 0.0,
             "base_slippage_rate": float(result.config.slippage),
             "tw_brokerage_rate": float(DEFAULT_TW_BROKERAGE_RATE),
             "tw_brokerage_min": float(DEFAULT_TW_BROKERAGE_MIN),
@@ -182,5 +183,7 @@ def _integration_readme() -> str:
 
 - 成本/滑價控制是「固定成交重播」，不是重新跑選股/訊號/參數搜尋。
 - 若要完整重跑策略，請回到 CLI 用新設定再輸出一包。
+- finding 區塊是原始基準回測的證據；滑桿影響請看「目前控制值（重播）」曲線。
 - Shioaji 區塊只讀 fixture，沒有登入、下單或私鑰處理。
+- 若要自建 fixture，可在本機使用 `backtest-shioaji-capture --symbols ... --seconds ... --output ...`。
 """

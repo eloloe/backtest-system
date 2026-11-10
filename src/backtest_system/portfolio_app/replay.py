@@ -29,6 +29,7 @@ class ReplayResult:
     equity: pd.Series
     drawdown: pd.Series
     trades_applied: int
+    trades_denied: int
     problems: tuple[str, ...]
 
 
@@ -49,7 +50,7 @@ def replay_fixed_trades(
     bars = _normalize_prices(prices)
     index = pd.DatetimeIndex(calendar).normalize()
     if len(index) == 0:
-        return ReplayResult(pd.Series(dtype="float64"), pd.Series(dtype="float64"), 0, ("empty calendar",))
+        return ReplayResult(pd.Series(dtype="float64"), pd.Series(dtype="float64"), 0, 0, ("empty calendar",))
 
     grouped = defaultdict(list)
     for row in tape.itertuples(index=False):
@@ -61,6 +62,7 @@ def replay_fixed_trades(
     marks: list[float] = []
     problems: list[str] = []
     applied = 0
+    denied = 0
 
     for day in index:
         date = pd.Timestamp(day).normalize()
@@ -78,14 +80,24 @@ def replay_fixed_trades(
             notional = float(fill * row.shares)
             fee = _fee(notional, row.action, row.market, row.symbol, costs)
             if row.action == "BUY":
+                needed = notional + fee
+                if needed > cash + 1e-9:
+                    denied += 1
+                    problems.append(
+                        f"{row.symbol} {date.date()} buy denied: need {needed:.4f}, cash {cash:.4f}"
+                    )
+                    continue
                 cash -= notional + fee
                 positions[row.symbol] += float(row.shares)
             else:
-                positions[row.symbol] -= float(row.shares)
-                if positions[row.symbol] < -1e-9:
+                held = float(positions[row.symbol])
+                if row.shares > held + 1e-9:
+                    denied += 1
                     problems.append(
-                        f"{row.symbol} {date.date()} sell exceeds long position by {abs(positions[row.symbol]):.6f}"
+                        f"{row.symbol} {date.date()} sell denied: shares {row.shares:.6f} > held {held:.6f}"
                     )
+                    continue
+                positions[row.symbol] -= float(row.shares)
                 cash += notional - fee
             applied += 1
 
@@ -111,6 +123,7 @@ def replay_fixed_trades(
         equity=equity_curve,
         drawdown=drawdown,
         trades_applied=applied,
+        trades_denied=denied,
         problems=tuple(dict.fromkeys(problems)),
     )
 

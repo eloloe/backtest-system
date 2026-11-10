@@ -87,6 +87,7 @@ def replay_preview(result, *, commission: float, slippage: float) -> dict:
         "drawdown": _series_points(replay.drawdown),
         "problems": list(replay.problems),
         "trades_applied": replay.trades_applied,
+        "trades_denied": replay.trades_denied,
     }
 
 

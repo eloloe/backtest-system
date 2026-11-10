@@ -30,6 +30,7 @@ nautilus = ["nautilus_trader>=1.220"]
 [project.scripts]
 backtest = "backtest_system.cli:main"
 backtest-mini-app = "backtest_system.portfolio_app.cli:main"
+backtest-shioaji-capture = "backtest_system.portfolio_app.shioaji_capture_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

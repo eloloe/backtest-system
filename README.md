@@ -79,6 +79,25 @@ python cli.py --config examples/trend_stop.yaml \
 - Shioaji 區塊只讀 quote fixture 做假設比對，不收憑證、不連帳號、不下單。
 - 雲端環境通常無法驗證你的 Shioaji 帳號連線，`live_connectivity_verified=false` 會明確標示這件事。
 
+若你要在自己的本機（有永豐帳號）收集真實 quote，再匯回小 app 比對執行假設，可用：
+
+```bash
+pip install -r requirements-shioaji.txt
+export SHIOAJI_API_KEY=...
+export SHIOAJI_SECRET_KEY=...
+backtest-shioaji-capture \
+  --symbols 2330.TW,0050.TW,TXF \
+  --seconds 20 \
+  --output output/shioaji_quotes_local.json
+```
+
+這支工具只做 `quote.subscribe` 串流快照（bid/ask/depth/timestamp）並輸出 JSON，不呼叫下單 API。  
+官方文件來源（實作對照）：
+
+- https://sinotrade.github.io/tutor/market_data/streaming/stocks/
+- https://sinotrade.github.io/tutor/market_data/streaming/futures/
+- https://sinotrade.github.io/tutor/advanced/nonblock/
+
 ## 專案結構
 
 實作在 `src/backtest_system/`。根目錄留下同名的薄包裝，所以舊的 `from backtester import Backtester`、`python cli.py`、`streamlit run app.py` 還能用。研究核心不 import Streamlit。今天的 Yahoo 快照快取留在根目錄的 `fundamentals.py`，給畫面上那個前視選項。

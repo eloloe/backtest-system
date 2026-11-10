@@ -1,3 +1,5 @@
+import { applyWindow, rebaseSeries, replayFixedTrades } from "./replay_runtime.js";
+
 async function loadData() {
   const resp = await fetch("./data.json");
   if (!resp.ok) throw new Error("讀不到 data.json");
@@ -14,27 +16,24 @@ function fmtNum(v) {
   return Number(v).toLocaleString("zh-TW", { maximumFractionDigits: 2 });
 }
 
-function toDateValue(day) {
-  return new Date(day).toISOString().slice(0, 10);
-}
-
-function parseByDate(points) {
-  const m = new Map();
-  for (const p of points) m.set(p.date, p.value);
-  return m;
-}
-
 function drawCharts(state) {
-  const eq = state.preview.equity.filter((p) => p.date >= state.start && p.date <= state.end);
-  const dd = state.preview.drawdown.filter((p) => p.date >= state.start && p.date <= state.end);
-  const bench = state.benchmark.filter((p) => p.date >= state.start && p.date <= state.end);
+  const baseEq = rebaseSeries(applyWindow(state.original.equity, state.start, state.end));
+  const eq = rebaseSeries(applyWindow(state.preview.equity, state.start, state.end));
+  const dd = applyWindow(state.preview.drawdown, state.start, state.end);
+  const bench = rebaseSeries(applyWindow(state.benchmark, state.start, state.end));
   Plotly.newPlot(
     "equityChart",
     [
-      { x: eq.map((p) => p.date), y: eq.map((p) => p.value), type: "scatter", name: "策略", line: { color: "#60a5fa" } },
-      { x: bench.map((p) => p.date), y: bench.map((p) => p.value), type: "scatter", name: "基準", line: { color: "#f59e0b", dash: "dot" } },
+      { x: baseEq.map((p) => p.date), y: baseEq.map((p) => p.value), type: "scatter", name: "原始回測（重播）", line: { color: "#475569", dash: "dot" } },
+      { x: eq.map((p) => p.date), y: eq.map((p) => p.value), type: "scatter", name: "目前控制值（重播）", line: { color: "#60a5fa" } },
+      { x: bench.map((p) => p.date), y: bench.map((p) => p.value), type: "scatter", name: "基準（同區間 rebase）", line: { color: "#f59e0b", dash: "dot" } },
     ],
-    { template: "plotly_dark", title: "淨值（含基準）", margin: { t: 36, b: 36, l: 36, r: 18 } },
+    {
+      template: "plotly_dark",
+      title: "淨值（區間起點=1.0，避免跨窗比較錯位）",
+      yaxis: { title: "倍數" },
+      margin: { t: 36, b: 36, l: 36, r: 18 },
+    },
     { responsive: true }
   );
   Plotly.newPlot(
@@ -71,6 +70,8 @@ function renderProvenance(data) {
 function renderFindings(data) {
   const list = document.getElementById("findingList");
   const detail = document.getElementById("findingDetail");
+  const baseline = document.getElementById("findingScope");
+  baseline.textContent = "以下 finding 來自原始基準回測，不隨成本滑桿即時改寫；滑桿影響請看上方『目前控制值（重播）』。";
   list.innerHTML = "";
   data.diagnostics.findings.forEach((f, idx) => {
     const btn = document.createElement("button");
@@ -121,67 +122,20 @@ function stats(points) {
 }
 
 function renderPreviewKpis(state) {
-  const seg = state.preview.equity.filter((p) => p.date >= state.start && p.date <= state.end);
+  const seg = applyWindow(state.preview.equity, state.start, state.end);
   const s = stats(seg);
   const root = document.getElementById("previewKpis");
   root.innerHTML = `
     <div class="kpi"><div class="muted">區間報酬</div><strong>${fmtPct(s.totalReturn)}</strong></div>
     <div class="kpi"><div class="muted">區間最大回撤</div><strong>${fmtPct(s.mdd)}</strong></div>
     <div class="kpi"><div class="muted">重播成交筆數</div><strong>${state.preview.trades_applied}</strong></div>
+    <div class="kpi"><div class="muted">拒單筆數（現金/部位不足）</div><strong>${state.preview.trades_denied}</strong></div>
     <div class="kpi"><div class="muted">重播問題數</div><strong>${state.preview.problems.length}</strong></div>
   `;
-}
-
-function replayClient(data, commissionRate, slippageRate) {
-  const calendar = data.series.calendar;
-  const prices = data.series.prices;
-  const trades = data.series.trades;
-  const position = {};
-  const lastClose = {};
-  let cash = data.meta.initial_capital;
-  const byDate = new Map();
-  for (const t of trades) {
-    const arr = byDate.get(t.date) || [];
-    arr.push(t);
-    byDate.set(t.date, arr);
-  }
-  const points = [];
-  const dd = [];
-  let peak = cash;
-  for (const day of calendar) {
-    const dayTrades = byDate.get(day) || [];
-    for (const t of dayTrades) {
-      const bar = prices[t.symbol]?.[day];
-      if (!bar) continue;
-      const open = bar.open;
-      const fill = t.action === "BUY" ? open * (1 + slippageRate) : open * (1 - slippageRate);
-      const notional = fill * t.shares;
-      let fee = notional * commissionRate;
-      const tw = t.market === "TW" || t.symbol.endsWith(".TW") || t.symbol.endsWith(".TWO");
-      if (tw) {
-        fee = Math.max(notional * data.meta.tw_brokerage_rate, data.meta.tw_brokerage_min);
-        if (t.action === "SELL") fee += notional * data.meta.tw_sell_tax_rate;
-      }
-      if (t.action === "BUY") {
-        cash -= notional + fee;
-        position[t.symbol] = (position[t.symbol] || 0) + t.shares;
-      } else {
-        cash += notional - fee;
-        position[t.symbol] = (position[t.symbol] || 0) - t.shares;
-      }
-    }
-    let eq = cash;
-    Object.keys(position).forEach((symbol) => {
-      if (Math.abs(position[symbol]) < 1e-10) return;
-      const bar = prices[symbol]?.[day];
-      if (bar) lastClose[symbol] = bar.close;
-      if (lastClose[symbol] !== undefined) eq += position[symbol] * lastClose[symbol];
-    });
-    peak = Math.max(peak, eq);
-    points.push({ date: day, value: eq });
-    dd.push({ date: day, value: eq / peak - 1 });
-  }
-  return { equity: points, drawdown: dd, trades_applied: trades.length, problems: [] };
+  const issue = document.getElementById("previewIssue");
+  issue.textContent = state.preview.problems.length
+    ? `重播異常：${state.preview.problems.slice(0, 2).join("；")}${state.preview.problems.length > 2 ? "…" : ""}`
+    : "";
 }
 
 function setupControls(data, state) {
@@ -204,9 +158,13 @@ function setupControls(data, state) {
   btn.onclick = () => {
     state.start = start.value || minDate;
     state.end = end.value || maxDate;
+    if (state.start > state.end) {
+      document.getElementById("previewIssue").textContent = "日期區間錯誤：起日不可晚於訖日。";
+      return;
+    }
     const c = Math.max(0, Number(comm.value || 0) / 100);
     const s = Math.max(0, Number(slip.value || 0) / 100);
-    state.preview = replayClient(data, c, s);
+    state.preview = replayFixedTrades(data, c, s);
     drawCharts(state);
     renderPreviewKpis(state);
   };
@@ -221,6 +179,7 @@ loadData()
       start: data.series.calendar[0],
       end: data.series.calendar[data.series.calendar.length - 1],
       benchmark: data.series.benchmark,
+      original: data.series.base_preview,
       preview: data.series.base_preview,
     };
     setupControls(data, state);

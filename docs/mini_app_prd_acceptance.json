@@ -53,6 +53,11 @@
       "status": "done"
     },
     {
+      "id": "diag-shioaji-readonly-capture",
+      "must": "提供本機帳號可用的只讀收集器（quote subscribe/callback/cleanup），供 fixture 匯入",
+      "status": "done"
+    },
+    {
       "id": "delivery-static-bundle",
       "must": "輸出可嵌入網站的靜態包",
       "status": "done"
